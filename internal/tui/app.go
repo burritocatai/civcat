@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/burritocatai/civcat/internal/api"
@@ -141,16 +142,53 @@ var searchBaseModels = []struct {
 	value string
 }{
 	{"All", ""},
+	// Flux
 	{"Flux.1 D", "Flux.1 D"},
 	{"Flux.1 S", "Flux.1 S"},
+	{"Flux.1 Kontext", "Flux.1 Kontext"},
+	{"Flux.2 D", "Flux.2 D"},
+	// Pony
 	{"Pony", "Pony"},
+	{"Pony V7", "Pony V7"},
+	// SDXL
 	{"SDXL 1.0", "SDXL 1.0"},
-	{"SD 1.5", "SD 1.5"},
+	{"SDXL 1.0 LCM", "SDXL 1.0 LCM"},
+	{"SDXL Turbo", "SDXL Turbo"},
+	{"SDXL Lightning", "SDXL Lightning"},
+	{"SDXL Hyper", "SDXL Hyper"},
+	{"SDXL Distilled", "SDXL Distilled"},
+	// SD 3.x
 	{"SD 3", "SD 3"},
 	{"SD 3.5", "SD 3.5"},
 	{"SD 3.5 Large", "SD 3.5 Large"},
+	{"SD 3.5 Large Turbo", "SD 3.5 Large Turbo"},
 	{"SD 3.5 Medium", "SD 3.5 Medium"},
+	// SD 1.x
+	{"SD 1.5", "SD 1.5"},
+	{"SD 1.5 LCM", "SD 1.5 LCM"},
+	{"SD 1.5 Hyper", "SD 1.5 Hyper"},
+	{"SD 1.4", "SD 1.4"},
+	// SD 2.x
+	{"SD 2.1", "SD 2.1"},
+	{"SD 2.1 768", "SD 2.1 768"},
+	// Illustrious / NoobAI
 	{"Illustrious", "Illustrious"},
+	{"NoobAI", "NoobAI"},
+	{"Chroma", "Chroma"},
+	// Video models
+	{"Hunyuan Video", "Hunyuan Video"},
+	{"Wan Video", "Wan Video"},
+	{"SVD", "SVD"},
+	{"SVD XT", "SVD XT"},
+	{"CogVideoX", "CogVideoX"},
+	{"LTXV", "LTXV"},
+	{"Mochi", "Mochi"},
+	// Other
+	{"Hunyuan 1", "Hunyuan 1"},
+	{"Kolors", "Kolors"},
+	{"Stable Cascade", "Stable Cascade"},
+	{"AuraFlow", "AuraFlow"},
+	{"PixArt a", "PixArt a"},
 	{"Other", "Other"},
 }
 
@@ -225,6 +263,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case modelDetailMsg:
+		a.searching = false
 		if msg.err != nil {
 			a.errMsg = msg.err.Error()
 		} else {
@@ -575,6 +614,34 @@ func (a *App) handleUpdatesKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// parseCivitaiURN parses a Civitai AIR URN (e.g. "urn:air:sdxl:checkpoint:civitai:24350@2636109")
+// and returns the model ID and version ID. Version ID is 0 if not present.
+func parseCivitaiURN(s string) (modelID int, versionID int, ok bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "urn:air:") {
+		return 0, 0, false
+	}
+	parts := strings.Split(s, ":")
+	// urn:air:<base>:<type>:civitai:<modelID>@<versionID>
+	if len(parts) != 6 || parts[4] != "civitai" {
+		return 0, 0, false
+	}
+	idPart := parts[5]
+	if idx := strings.Index(idPart, "@"); idx >= 0 {
+		vid, err := strconv.Atoi(idPart[idx+1:])
+		if err != nil {
+			return 0, 0, false
+		}
+		versionID = vid
+		idPart = idPart[:idx]
+	}
+	mid, err := strconv.Atoi(idPart)
+	if err != nil {
+		return 0, 0, false
+	}
+	return mid, versionID, true
+}
+
 // Commands
 
 // reSearch resets pagination and re-searches with current filters.
@@ -591,6 +658,17 @@ func (a *App) reSearch() tea.Cmd {
 
 func (a *App) searchCmd() tea.Cmd {
 	a.searching = true
+
+	// Detect Civitai AIR URN and fetch the model directly.
+	if modelID, _, ok := parseCivitaiURN(a.searchQuery); ok {
+		client := a.client
+		a.prevView = viewSearch
+		return func() tea.Msg {
+			model, err := client.GetModel(modelID)
+			return modelDetailMsg{model: model, err: err}
+		}
+	}
+
 	p := api.SearchParams{
 		Query:     a.searchQuery,
 		ModelType: searchTypes[a.searchTypeIdx].modelType,
@@ -796,7 +874,7 @@ func (a *App) viewSearch() string {
 	typeLabel := searchTypes[a.searchTypeIdx].label
 	sortLabel := searchSorts[a.searchSortIdx].label
 	baseLabel := searchBaseModels[a.searchBaseIdx].label
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %-14s  Base: %-16s  Sort: %s", typeLabel, baseLabel, sortLabel)) + "\n")
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %-14s  Base: %-20s  Sort: %s", typeLabel, baseLabel, sortLabel)) + "\n")
 
 	if a.searchInput {
 		b.WriteString(inputStyle.Render(fmt.Sprintf("Search: %s_", a.searchQuery)) + "\n\n")
