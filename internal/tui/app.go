@@ -44,6 +44,7 @@ type App struct {
 	searchTotal    int
 	searching      bool
 	searchInput    bool
+	searchTypeIdx  int // index into searchTypes for category filter
 
 	// Model detail view
 	detailModel   *api.Model
@@ -96,6 +97,26 @@ type downloadProgressMsg struct {
 type downloadCompleteMsg struct {
 	installed *tracker.InstalledModel
 	err       error
+}
+
+// searchTypes is the list of types the user can cycle through with 't'.
+// Empty string means "All types".
+var searchTypes = []struct {
+	label     string
+	modelType api.ModelType
+}{
+	{"All", ""},
+	{"Checkpoint", api.ModelTypeCheckpoint},
+	{"LORA", api.ModelTypeLORA},
+	{"Embedding", api.ModelTypeTextualInversion},
+	{"Controlnet", api.ModelTypeControlnet},
+	{"VAE", api.ModelTypeVAE},
+	{"Upscaler", api.ModelTypeUpscaler},
+	{"Hypernetwork", api.ModelTypeHypernetwork},
+	{"Poses", api.ModelTypePoses},
+	{"Wildcards", api.ModelTypeWildcards},
+	{"MotionModule", api.ModelTypeMotionModule},
+	{"Other", api.ModelTypeOther},
 }
 
 type updateCheckMsg struct {
@@ -299,6 +320,22 @@ func (a *App) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "/":
 		a.searchInput = true
 		a.searchQuery = ""
+	case "t":
+		a.searchTypeIdx = (a.searchTypeIdx + 1) % len(searchTypes)
+		if a.searchQuery != "" {
+			a.searchPageNum = 1
+			a.searchNextPage = ""
+			a.searchHasNext = false
+			return a, a.searchCmd()
+		}
+	case "T":
+		a.searchTypeIdx = (a.searchTypeIdx + len(searchTypes) - 1) % len(searchTypes)
+		if a.searchQuery != "" {
+			a.searchPageNum = 1
+			a.searchNextPage = ""
+			a.searchHasNext = false
+			return a, a.searchCmd()
+		}
 	case "n":
 		if a.searchHasNext && a.searchNextPage != "" {
 			a.searchPageNum++
@@ -354,6 +391,11 @@ func (a *App) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", "i":
 		if !a.downloading && a.detailModel != nil && len(a.detailModel.Versions) > 0 {
 			version := a.detailModel.Versions[a.detailCursor]
+			if version.IsEarlyAccess() {
+				days := version.EarlyAccessDaysLeft()
+				a.errMsg = fmt.Sprintf("This version is in early access (%d days remaining) — download unavailable", days)
+				return a, nil
+			}
 			a.downloading = true
 			a.downloadName = a.detailModel.Name
 			a.downloadPct = 0
@@ -475,9 +517,10 @@ func (a *App) handleUpdatesKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) searchCmd() tea.Cmd {
 	a.searching = true
 	query := a.searchQuery
+	modelType := searchTypes[a.searchTypeIdx].modelType
 	client := a.client
 	return func() tea.Msg {
-		results, err := client.SearchModels(query, "", 20, "")
+		results, err := client.SearchModels(query, modelType, 20, "")
 		return searchResultMsg{results: results, err: err}
 	}
 }
@@ -619,6 +662,9 @@ func (a *App) viewSearch() string {
 
 	b.WriteString(subtitleStyle.Render("Search Models") + "\n\n")
 
+	typeLabel := searchTypes[a.searchTypeIdx].label
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %s", typeLabel)) + "\n")
+
 	if a.searchInput {
 		b.WriteString(inputStyle.Render(fmt.Sprintf("Search: %s_", a.searchQuery)) + "\n\n")
 	} else {
@@ -659,7 +705,7 @@ func (a *App) viewSearch() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  /: new search  enter: details  n: next page  esc: back"))
+	b.WriteString(helpStyle.Render("  /: new search  t/T: cycle type  enter: details  n: next page  esc: back"))
 
 	return b.String()
 }
@@ -701,10 +747,14 @@ func (a *App) viewDetail() string {
 			fileInfo = fmt.Sprintf("%.1f MB, %s", f.SizeKB/1024, f.Metadata.Format)
 		}
 
-		installed := ""
+		badge := ""
 		im := a.tracker.GetByModelID(m.ID)
 		if im != nil && im.VersionID == v.ID {
-			installed = successStyle.Render(" [installed]")
+			badge = successStyle.Render(" [installed]")
+		}
+		if v.IsEarlyAccess() {
+			days := v.EarlyAccessDaysLeft()
+			badge = warningStyle.Render(fmt.Sprintf(" [EARLY ACCESS - %dd]", days))
 		}
 
 		line := fmt.Sprintf("%s%-30s %-15s %-20s%s",
@@ -712,7 +762,7 @@ func (a *App) viewDetail() string {
 			truncate(v.Name, 28),
 			v.BaseModel,
 			fileInfo,
-			installed,
+			badge,
 		)
 		b.WriteString(style.Render(line) + "\n")
 	}

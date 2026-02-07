@@ -74,9 +74,46 @@ type ModelVersion struct {
 	TrainedWords        []string           `json:"trainedWords"`
 	BaseModel           string             `json:"baseModel"`
 	EarlyAccessTimeFrame int               `json:"earlyAccessTimeFrame"`
-	Files               []ModelFile        `json:"files"`
-	Images              []ModelImage       `json:"images"`
-	Stats               ModelVersionStats  `json:"stats"`
+	EarlyAccessEndsAt    *time.Time        `json:"earlyAccessEndsAt"`
+	Availability         string            `json:"availability"`
+	Files                []ModelFile       `json:"files"`
+	Images               []ModelImage      `json:"images"`
+	Stats                ModelVersionStats `json:"stats"`
+}
+
+// IsEarlyAccess returns true if the version is currently in early access.
+func (v *ModelVersion) IsEarlyAccess() bool {
+	// Check explicit availability field first (newer API responses).
+	if v.Availability == "EarlyAccess" {
+		return true
+	}
+	// Check explicit end date.
+	if v.EarlyAccessEndsAt != nil {
+		return time.Now().Before(*v.EarlyAccessEndsAt)
+	}
+	// Fall back to computing from publishedAt + timeframe.
+	if v.EarlyAccessTimeFrame > 0 && v.PublishedAt != nil {
+		end := v.PublishedAt.Add(time.Duration(v.EarlyAccessTimeFrame) * 24 * time.Hour)
+		return time.Now().Before(end)
+	}
+	return false
+}
+
+// EarlyAccessDaysLeft returns how many days remain, or 0 if not in early access.
+func (v *ModelVersion) EarlyAccessDaysLeft() int {
+	var end time.Time
+	if v.EarlyAccessEndsAt != nil {
+		end = *v.EarlyAccessEndsAt
+	} else if v.EarlyAccessTimeFrame > 0 && v.PublishedAt != nil {
+		end = v.PublishedAt.Add(time.Duration(v.EarlyAccessTimeFrame) * 24 * time.Hour)
+	} else {
+		return 0
+	}
+	days := int(time.Until(end).Hours() / 24)
+	if days < 0 {
+		return 0
+	}
+	return days + 1
 }
 
 type ModelFile struct {
