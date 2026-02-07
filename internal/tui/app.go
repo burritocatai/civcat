@@ -420,6 +420,21 @@ func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.statusMsg = ""
 			a.errMsg = ""
 		}
+	case "e":
+		if len(a.installedModels) > 0 {
+			dir, err := config.ConfigDir()
+			if err != nil {
+				a.errMsg = fmt.Sprintf("Export failed: %v", err)
+			} else {
+				path := dir + "/models-export.json"
+				if err := a.tracker.Export(path); err != nil {
+					a.errMsg = fmt.Sprintf("Export failed: %v", err)
+				} else {
+					a.statusMsg = fmt.Sprintf("Exported %d model(s) to %s", len(a.installedModels), path)
+					a.errMsg = ""
+				}
+			}
+		}
 	}
 	return a, nil
 }
@@ -896,7 +911,7 @@ func (a *App) viewInstalled() string {
 	if a.confirmDelete && a.deleteCandidate != nil {
 		b.WriteString(warningStyle.Render(fmt.Sprintf("  Delete %s and remove file from disk? (y/N)", a.deleteCandidate.ModelName)))
 	} else {
-		b.WriteString(helpStyle.Render("  s: search  u: check updates  c: config  enter: details  d: delete  q: quit"))
+		b.WriteString(helpStyle.Render("  s: search  u: check updates  c: config  enter: details  d: delete  e: export  q: quit"))
 	}
 
 	return b.String()
