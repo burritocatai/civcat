@@ -8,6 +8,7 @@ import (
 	"github.com/burritocatai/civcat/internal/config"
 	"github.com/burritocatai/civcat/internal/downloader"
 	"github.com/burritocatai/civcat/internal/tracker"
+	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -57,9 +58,13 @@ type App struct {
 	updateResults   []updateResult
 
 	// Download state
-	downloading    bool
-	downloadName   string
-	downloadPct    float64
+	downloading      bool
+	downloadName     string
+	downloadProgress progress.Model
+	downloadPct      float64
+	downloadBytes    int64
+	downloadTotal    int64
+	downloadCh       chan downloader.Progress
 
 	// Config view
 	configCursor int
@@ -91,7 +96,8 @@ type modelDetailMsg struct {
 }
 
 type downloadProgressMsg struct {
-	progress downloader.Progress
+	bytesDownloaded int64
+	totalBytes      int64
 }
 
 type downloadCompleteMsg struct {
@@ -126,12 +132,13 @@ type updateCheckMsg struct {
 
 func NewApp(cfg *config.Config, client *api.Client, trk *tracker.Tracker) *App {
 	a := &App{
-		cfg:             cfg,
-		client:          client,
-		tracker:         trk,
-		currentView:     viewInstalled,
-		installedModels: trk.GetAll(),
-		configEdit:      -1,
+		cfg:              cfg,
+		client:           client,
+		tracker:          trk,
+		currentView:      viewInstalled,
+		installedModels:  trk.GetAll(),
+		configEdit:       -1,
+		downloadProgress: progress.New(progress.WithDefaultGradient()),
 	}
 
 	// First-run: open config view with path field in edit mode.
@@ -155,6 +162,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
+		a.downloadProgress.Width = msg.Width - 6
+		if a.downloadProgress.Width > 80 {
+			a.downloadProgress.Width = 80
+		}
 		return a, nil
 
 	case tea.KeyMsg:
@@ -196,13 +207,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case downloadProgressMsg:
-		if msg.progress.TotalBytes > 0 {
-			a.downloadPct = float64(msg.progress.BytesDownloaded) / float64(msg.progress.TotalBytes) * 100
+		a.downloadBytes = msg.bytesDownloaded
+		a.downloadTotal = msg.totalBytes
+		if msg.totalBytes > 0 {
+			a.downloadPct = float64(msg.bytesDownloaded) / float64(msg.totalBytes)
 		}
-		return a, nil
+		cmd := a.downloadProgress.SetPercent(a.downloadPct)
+		return a, tea.Batch(cmd, a.waitForProgress())
 
 	case downloadCompleteMsg:
 		a.downloading = false
+		// Set bar to 100%.
+		cmd := a.downloadProgress.SetPercent(1.0)
 		if msg.err != nil {
 			a.errMsg = fmt.Sprintf("Download failed: %v", msg.err)
 		} else {
@@ -211,7 +227,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusMsg = fmt.Sprintf("Installed %s", msg.installed.ModelName)
 			a.errMsg = ""
 		}
-		return a, nil
+		return a, cmd
+
+	// Handle animated progress bar frames.
+	case progress.FrameMsg:
+		progressModel, cmd := a.downloadProgress.Update(msg)
+		a.downloadProgress = progressModel.(progress.Model)
+		return a, cmd
 
 	case updateCheckMsg:
 		a.checkingUpdates = false
@@ -399,6 +421,16 @@ func (a *App) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.downloading = true
 			a.downloadName = a.detailModel.Name
 			a.downloadPct = 0
+			a.downloadBytes = 0
+			a.downloadTotal = 0
+			// Reset the progress bar.
+			a.downloadProgress = progress.New(progress.WithDefaultGradient())
+			if a.width > 0 {
+				a.downloadProgress.Width = a.width - 6
+				if a.downloadProgress.Width > 80 {
+					a.downloadProgress.Width = 80
+				}
+			}
 			return a, a.downloadCmd(a.detailModel, &version)
 		}
 	}
@@ -543,14 +575,52 @@ func (a *App) fetchModelDetail(modelID int) tea.Cmd {
 	}
 }
 
+// downloadCmd starts a background download and returns a cmd to listen for
+// the first progress update. The download goroutine sends progress on a
+// channel; waitForProgress reads from it and returns tea messages.
 func (a *App) downloadCmd(model *api.Model, version *api.ModelVersion) tea.Cmd {
 	client := a.client
 	comfyPath := a.cfg.ComfyUIPath
 	m := *model
 	v := *version
+
+	ch := make(chan downloader.Progress, 64)
+	a.downloadCh = ch
+
+	// Run download in a background goroutine.
+	go func() {
+		_, err := downloader.Download(client, &m, &v, comfyPath, ch)
+		if err != nil {
+			// Send error as a final message on the channel.
+			ch <- downloader.Progress{Done: true, Err: err}
+		}
+		// On success, Download already sent the Done message with Installed.
+	}()
+
+	// Return the first waitForProgress to start the read loop.
+	return a.waitForProgress()
+}
+
+// waitForProgress returns a tea.Cmd that blocks until the next progress
+// update arrives on the download channel, then returns the appropriate msg.
+func (a *App) waitForProgress() tea.Cmd {
+	ch := a.downloadCh
+	if ch == nil {
+		return nil
+	}
 	return func() tea.Msg {
-		installed, err := downloader.Download(client, &m, &v, comfyPath, nil)
-		return downloadCompleteMsg{installed: installed, err: err}
+		p, ok := <-ch
+		if !ok {
+			// Channel closed — download finished.
+			return nil
+		}
+		if p.Done || p.Err != nil {
+			return downloadCompleteMsg{installed: p.Installed, err: p.Err}
+		}
+		return downloadProgressMsg{
+			bytesDownloaded: p.BytesDownloaded,
+			totalBytes:      p.TotalBytes,
+		}
 	}
 }
 
@@ -612,7 +682,19 @@ func (a *App) View() string {
 		b.WriteString("\n")
 	}
 	if a.downloading {
-		b.WriteString(warningStyle.Render(fmt.Sprintf("Downloading %s... %.1f%%", a.downloadName, a.downloadPct)))
+		b.WriteString(warningStyle.Render(fmt.Sprintf("  Downloading %s", a.downloadName)))
+		b.WriteString("\n")
+		b.WriteString("  " + a.downloadProgress.View())
+		b.WriteString("\n")
+		if a.downloadTotal > 0 {
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("  %s / %s (%.1f%%)",
+				formatBytes(a.downloadBytes),
+				formatBytes(a.downloadTotal),
+				a.downloadPct*100)))
+		} else {
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("  %s downloaded",
+				formatBytes(a.downloadBytes))))
+		}
 		b.WriteString("\n")
 	}
 
@@ -890,4 +972,17 @@ func maskKey(key string) string {
 		return "****"
 	}
 	return key[:4] + "..." + key[len(key)-4:]
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }

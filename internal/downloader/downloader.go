@@ -43,6 +43,7 @@ type Progress struct {
 	TotalBytes      int64
 	Done            bool
 	Err             error
+	Installed       *tracker.InstalledModel
 }
 
 // Download downloads a model version and installs it to the proper ComfyUI directory.
@@ -169,6 +170,7 @@ func Download(
 			BytesDownloaded: downloaded,
 			TotalBytes:      totalBytes,
 			Done:            true,
+			Installed:       installed,
 		}
 	}
 
