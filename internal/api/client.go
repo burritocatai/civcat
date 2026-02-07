@@ -180,27 +180,41 @@ func (c *Client) GetModelVersion(versionID int) (*ModelVersion, error) {
 	return &version, nil
 }
 
-// DownloadURL returns the authenticated download URL for a model version.
-func (c *Client) DownloadURL(versionID int) string {
-	u := fmt.Sprintf("https://civitai.com/api/download/models/%d", versionID)
-	if c.apiKey != "" {
-		u += "?token=" + url.QueryEscape(c.apiKey)
-	}
-	return u
-}
-
 // DownloadFile downloads a file and returns the response body (caller must close).
-// It follows redirects and uses token auth via query param (required for S3 redirects).
+// Uses Authorization header for the initial civitai.com request, with a custom
+// redirect policy that strips auth on cross-domain hops (S3 uses pre-signed URLs).
 func (c *Client) DownloadFile(versionID int) (*http.Response, error) {
 	c.waitForToken()
 
-	dlURL := c.DownloadURL(versionID)
+	dlURL := fmt.Sprintf("https://civitai.com/api/download/models/%d", versionID)
+
+	req, err := http.NewRequest("GET", dlURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating download request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "civcat/1.0")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	client := &http.Client{
 		Timeout: 0, // no timeout for large downloads
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			// Strip Authorization header on cross-domain redirects.
+			// S3/CDN pre-signed URLs have their own auth and will
+			// reject requests that carry an extra Authorization header.
+			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+				req.Header.Del("Authorization")
+			}
+			return nil
+		},
 	}
 
-	resp, err := client.Get(dlURL)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("downloading: %w", err)
 	}
