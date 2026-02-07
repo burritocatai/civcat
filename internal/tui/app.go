@@ -62,6 +62,7 @@ type App struct {
 	configCursor int
 	configEdit   int // -1 = not editing, 0 = path, 1 = apikey
 	configInput  string
+	firstRun     bool
 
 	// Status / error
 	statusMsg string
@@ -101,7 +102,7 @@ type updateCheckMsg struct {
 }
 
 func NewApp(cfg *config.Config, client *api.Client, trk *tracker.Tracker) *App {
-	return &App{
+	a := &App{
 		cfg:             cfg,
 		client:          client,
 		tracker:         trk,
@@ -109,6 +110,17 @@ func NewApp(cfg *config.Config, client *api.Client, trk *tracker.Tracker) *App {
 		installedModels: trk.GetAll(),
 		configEdit:      -1,
 	}
+
+	// First-run: open config view with path field in edit mode.
+	if !cfg.IsConfigured() {
+		a.firstRun = true
+		a.currentView = viewConfig
+		a.configCursor = 0
+		a.configEdit = 0
+		a.configInput = ""
+	}
+
+	return a
 }
 
 func (a *App) Init() tea.Cmd {
@@ -353,6 +365,11 @@ func (a *App) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) handleConfigKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		if a.firstRun {
+			// Can't leave config until ComfyUI path is set.
+			a.errMsg = "Please set a ComfyUI path before continuing"
+			return a, nil
+		}
 		a.currentView = viewInstalled
 	case "up", "k":
 		if a.configCursor > 0 {
@@ -377,15 +394,55 @@ func (a *App) handleConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		if a.configEdit == 0 {
+			if a.configInput == "" {
+				a.errMsg = "ComfyUI path cannot be empty"
+				return a, nil
+			}
 			a.cfg.ComfyUIPath = a.configInput
+			a.cfg.Save()
+			a.errMsg = ""
+
+			// During first run, advance to API key field automatically.
+			if a.firstRun {
+				a.configEdit = 1
+				a.configCursor = 1
+				a.configInput = ""
+				a.statusMsg = "ComfyUI path saved"
+				return a, nil
+			}
 		} else {
 			a.cfg.APIKey = a.configInput
 			a.client = api.NewClient(a.cfg.GetAPIKey())
+			a.cfg.Save()
+
+			// First run complete — go to main view.
+			if a.firstRun {
+				a.firstRun = false
+				a.currentView = viewInstalled
+				a.statusMsg = "Setup complete! Press 's' to search for models."
+				a.errMsg = ""
+				return a, nil
+			}
 		}
-		a.cfg.Save()
 		a.configEdit = -1
 		a.statusMsg = "Config saved"
+		a.errMsg = ""
 	case "esc":
+		if a.firstRun && a.configEdit == 0 {
+			// Can't skip path during first run.
+			a.errMsg = "Please set a ComfyUI path before continuing"
+			return a, nil
+		}
+		if a.firstRun && a.configEdit == 1 {
+			// Allow skipping API key during first run.
+			a.firstRun = false
+			a.configEdit = -1
+			a.currentView = viewInstalled
+			a.cfg.Save()
+			a.statusMsg = "Setup complete! Press 's' to search for models."
+			a.errMsg = ""
+			return a, nil
+		}
 		a.configEdit = -1
 	case "backspace":
 		if len(a.configInput) > 0 {
@@ -654,7 +711,12 @@ func (a *App) viewDetail() string {
 func (a *App) viewConfig() string {
 	var b strings.Builder
 
-	b.WriteString(subtitleStyle.Render("Configuration") + "\n\n")
+	if a.firstRun {
+		b.WriteString(subtitleStyle.Render("Welcome to civcat!") + "\n")
+		b.WriteString(mutedStyle.Render("  Let's get you set up. Enter your ComfyUI installation path.") + "\n\n")
+	} else {
+		b.WriteString(subtitleStyle.Render("Configuration") + "\n\n")
+	}
 
 	fields := []struct {
 		label string
@@ -694,7 +756,17 @@ func (a *App) viewConfig() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  enter: edit  esc: back"))
+	if a.firstRun {
+		if a.configEdit == 0 {
+			b.WriteString(helpStyle.Render("  enter: save path"))
+		} else if a.configEdit == 1 {
+			b.WriteString(helpStyle.Render("  enter: save key  esc: skip (optional)"))
+		} else {
+			b.WriteString(helpStyle.Render("  enter: edit"))
+		}
+	} else {
+		b.WriteString(helpStyle.Render("  enter: edit  esc: back"))
+	}
 
 	return b.String()
 }

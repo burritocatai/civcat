@@ -38,15 +38,6 @@ func runApp(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	// First-run setup if not configured.
-	if !cfg.IsConfigured() {
-		fmt.Println("Welcome to civcat! Let's set up your configuration.")
-		fmt.Println()
-		if err := interactiveConfig(cfg); err != nil {
-			return err
-		}
-	}
-
 	client := api.NewClient(cfg.GetAPIKey())
 
 	trk, err := tracker.New()
