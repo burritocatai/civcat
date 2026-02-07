@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -74,6 +75,10 @@ type App struct {
 	configEdit   int // -1 = not editing, 0 = path, 1 = apikey
 	configInput  string
 	firstRun     bool
+
+	// Delete confirmation
+	confirmDelete    bool
+	deleteCandidate  *tracker.InstalledModel
 
 	// Status / error
 	statusMsg string
@@ -239,8 +244,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global keys
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if a.searchInput || a.configEdit >= 0 {
-				// Don't quit while editing
+			if a.searchInput || a.configEdit >= 0 || a.confirmDelete {
+				// Don't quit while editing or confirming
 			} else {
 				return a, tea.Quit
 			}
@@ -350,6 +355,36 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle delete confirmation dialog.
+	if a.confirmDelete {
+		switch msg.String() {
+		case "y", "Y":
+			m := a.deleteCandidate
+			// Delete the model file from disk.
+			var fileErr error
+			if m.FilePath != "" {
+				fileErr = os.Remove(m.FilePath)
+			}
+			// Remove from tracker regardless of file deletion result.
+			a.tracker.Remove(m.ModelID)
+			a.installedModels = a.tracker.GetAll()
+			if a.installedCursor >= len(a.installedModels) && a.installedCursor > 0 {
+				a.installedCursor--
+			}
+			if fileErr != nil && !os.IsNotExist(fileErr) {
+				a.statusMsg = fmt.Sprintf("Removed %s from tracking (file delete failed: %v)", m.ModelName, fileErr)
+			} else {
+				a.statusMsg = fmt.Sprintf("Deleted %s and removed from tracking", m.ModelName)
+			}
+			a.errMsg = ""
+		default:
+			a.statusMsg = "Delete cancelled"
+		}
+		a.confirmDelete = false
+		a.deleteCandidate = nil
+		return a, nil
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if a.installedCursor > 0 {
@@ -380,12 +415,10 @@ func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		if len(a.installedModels) > 0 {
 			m := a.installedModels[a.installedCursor]
-			a.tracker.Remove(m.ModelID)
-			a.installedModels = a.tracker.GetAll()
-			if a.installedCursor >= len(a.installedModels) && a.installedCursor > 0 {
-				a.installedCursor--
-			}
-			a.statusMsg = fmt.Sprintf("Removed %s from tracking", m.ModelName)
+			a.confirmDelete = true
+			a.deleteCandidate = &m
+			a.statusMsg = ""
+			a.errMsg = ""
 		}
 	}
 	return a, nil
@@ -860,7 +893,11 @@ func (a *App) viewInstalled() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  s: search  u: check updates  c: config  enter: details  d: remove  q: quit"))
+	if a.confirmDelete && a.deleteCandidate != nil {
+		b.WriteString(warningStyle.Render(fmt.Sprintf("  Delete %s and remove file from disk? (y/N)", a.deleteCandidate.ModelName)))
+	} else {
+		b.WriteString(helpStyle.Render("  s: search  u: check updates  c: config  enter: details  d: delete  q: quit"))
+	}
 
 	return b.String()
 }
