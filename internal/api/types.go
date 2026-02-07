@@ -33,6 +33,7 @@ type ResponseMetadata struct {
 	TotalPages  int    `json:"totalPages"`
 	NextPage    string `json:"nextPage"`
 	PrevPage    string `json:"prevPage"`
+	NextCursor  string `json:"nextCursor"`
 }
 
 type Model struct {

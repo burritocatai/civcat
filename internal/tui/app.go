@@ -35,13 +35,15 @@ type App struct {
 	installedCursor int
 
 	// Search view
-	searchQuery   string
-	searchResults []api.Model
-	searchCursor  int
-	searchPage    int
-	searchTotal   int
-	searching     bool
-	searchInput   bool
+	searchQuery    string
+	searchResults  []api.Model
+	searchCursor   int
+	searchNextPage string // nextPage URL for cursor-based pagination
+	searchHasNext  bool
+	searchPageNum  int // display-only page counter
+	searchTotal    int
+	searching      bool
+	searchInput    bool
 
 	// Model detail view
 	detailModel   *api.Model
@@ -154,6 +156,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.searchResults = msg.results.Items
 			a.searchTotal = msg.results.Metadata.TotalItems
+			a.searchNextPage = msg.results.Metadata.NextPage
+			a.searchHasNext = msg.results.Metadata.NextPage != ""
 			a.searchCursor = 0
 			a.errMsg = ""
 		}
@@ -296,14 +300,9 @@ func (a *App) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.searchInput = true
 		a.searchQuery = ""
 	case "n":
-		if a.searchPage*20 < a.searchTotal {
-			a.searchPage++
-			return a, a.searchCmd()
-		}
-	case "p":
-		if a.searchPage > 1 {
-			a.searchPage--
-			return a, a.searchCmd()
+		if a.searchHasNext && a.searchNextPage != "" {
+			a.searchPageNum++
+			return a, a.searchNextPageCmd()
 		}
 	case "esc":
 		a.currentView = viewInstalled
@@ -315,7 +314,9 @@ func (a *App) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		a.searchInput = false
-		a.searchPage = 1
+		a.searchPageNum = 1
+		a.searchNextPage = ""
+		a.searchHasNext = false
 		return a, a.searchCmd()
 	case "esc":
 		a.searchInput = false
@@ -438,6 +439,7 @@ func (a *App) handleConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.firstRun = false
 			a.configEdit = -1
 			a.currentView = viewInstalled
+			a.client = api.NewClient(a.cfg.GetAPIKey())
 			a.cfg.Save()
 			a.statusMsg = "Setup complete! Press 's' to search for models."
 			a.errMsg = ""
@@ -473,10 +475,19 @@ func (a *App) handleUpdatesKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (a *App) searchCmd() tea.Cmd {
 	a.searching = true
 	query := a.searchQuery
-	page := a.searchPage
 	client := a.client
 	return func() tea.Msg {
-		results, err := client.SearchModels(query, "", page, 20)
+		results, err := client.SearchModels(query, "", 20, "")
+		return searchResultMsg{results: results, err: err}
+	}
+}
+
+func (a *App) searchNextPageCmd() tea.Cmd {
+	a.searching = true
+	nextPage := a.searchNextPage
+	client := a.client
+	return func() tea.Msg {
+		results, err := client.FetchPage(nextPage)
 		return searchResultMsg{results: results, err: err}
 	}
 }
@@ -611,7 +622,11 @@ func (a *App) viewSearch() string {
 	if a.searchInput {
 		b.WriteString(inputStyle.Render(fmt.Sprintf("Search: %s_", a.searchQuery)) + "\n\n")
 	} else {
-		b.WriteString(mutedStyle.Render(fmt.Sprintf("  Query: %s (total: %d)", a.searchQuery, a.searchTotal)) + "\n\n")
+		pageInfo := ""
+		if a.searchPageNum > 0 {
+			pageInfo = fmt.Sprintf(" | page %d", a.searchPageNum)
+		}
+		b.WriteString(mutedStyle.Render(fmt.Sprintf("  Query: %s (total: %d%s)", a.searchQuery, a.searchTotal, pageInfo)) + "\n\n")
 	}
 
 	if a.searching {
@@ -644,7 +659,7 @@ func (a *App) viewSearch() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  /: new search  enter: details  n/p: next/prev page  esc: back"))
+	b.WriteString(helpStyle.Render("  /: new search  enter: details  n: next page  esc: back"))
 
 	return b.String()
 }

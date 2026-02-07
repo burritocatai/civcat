@@ -102,7 +102,9 @@ func (c *Client) doRequest(reqURL string) (*http.Response, error) {
 }
 
 // SearchModels searches for models by query string and optional type filter.
-func (c *Client) SearchModels(query string, modelType ModelType, page, limit int) (*ModelsResponse, error) {
+// For the initial search pass an empty cursor. For subsequent pages, pass the
+// NextCursor value from the previous response metadata.
+func (c *Client) SearchModels(query string, modelType ModelType, limit int, cursor string) (*ModelsResponse, error) {
 	params := url.Values{}
 	if query != "" {
 		params.Set("query", query)
@@ -110,15 +112,30 @@ func (c *Client) SearchModels(query string, modelType ModelType, page, limit int
 	if modelType != "" {
 		params.Set("types", string(modelType))
 	}
-	if page > 0 {
-		params.Set("page", strconv.Itoa(page))
-	}
 	if limit > 0 {
 		params.Set("limit", strconv.Itoa(limit))
+	}
+	if cursor != "" {
+		params.Set("cursor", cursor)
 	}
 
 	reqURL := baseURL + "/models?" + params.Encode()
 	resp, err := c.doRequest(reqURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result ModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decoding response: %w", err)
+	}
+	return &result, nil
+}
+
+// FetchPage fetches a full nextPage URL returned in response metadata.
+func (c *Client) FetchPage(pageURL string) (*ModelsResponse, error) {
+	resp, err := c.doRequest(pageURL)
 	if err != nil {
 		return nil, err
 	}
