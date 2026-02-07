@@ -141,16 +141,53 @@ var searchBaseModels = []struct {
 	value string
 }{
 	{"All", ""},
+	// Flux
 	{"Flux.1 D", "Flux.1 D"},
 	{"Flux.1 S", "Flux.1 S"},
+	{"Flux.1 Kontext", "Flux.1 Kontext"},
+	{"Flux.2 D", "Flux.2 D"},
+	// Pony
 	{"Pony", "Pony"},
+	{"Pony V7", "Pony V7"},
+	// SDXL
 	{"SDXL 1.0", "SDXL 1.0"},
-	{"SD 1.5", "SD 1.5"},
+	{"SDXL 1.0 LCM", "SDXL 1.0 LCM"},
+	{"SDXL Turbo", "SDXL Turbo"},
+	{"SDXL Lightning", "SDXL Lightning"},
+	{"SDXL Hyper", "SDXL Hyper"},
+	{"SDXL Distilled", "SDXL Distilled"},
+	// SD 3.x
 	{"SD 3", "SD 3"},
 	{"SD 3.5", "SD 3.5"},
 	{"SD 3.5 Large", "SD 3.5 Large"},
+	{"SD 3.5 Large Turbo", "SD 3.5 Large Turbo"},
 	{"SD 3.5 Medium", "SD 3.5 Medium"},
+	// SD 1.x
+	{"SD 1.5", "SD 1.5"},
+	{"SD 1.5 LCM", "SD 1.5 LCM"},
+	{"SD 1.5 Hyper", "SD 1.5 Hyper"},
+	{"SD 1.4", "SD 1.4"},
+	// SD 2.x
+	{"SD 2.1", "SD 2.1"},
+	{"SD 2.1 768", "SD 2.1 768"},
+	// Illustrious / NoobAI
 	{"Illustrious", "Illustrious"},
+	{"NoobAI", "NoobAI"},
+	{"Chroma", "Chroma"},
+	// Video models
+	{"Hunyuan Video", "Hunyuan Video"},
+	{"Wan Video", "Wan Video"},
+	{"SVD", "SVD"},
+	{"SVD XT", "SVD XT"},
+	{"CogVideoX", "CogVideoX"},
+	{"LTXV", "LTXV"},
+	{"Mochi", "Mochi"},
+	// Other
+	{"Hunyuan 1", "Hunyuan 1"},
+	{"Kolors", "Kolors"},
+	{"Stable Cascade", "Stable Cascade"},
+	{"AuraFlow", "AuraFlow"},
+	{"PixArt a", "PixArt a"},
 	{"Other", "Other"},
 }
 
@@ -796,7 +833,7 @@ func (a *App) viewSearch() string {
 	typeLabel := searchTypes[a.searchTypeIdx].label
 	sortLabel := searchSorts[a.searchSortIdx].label
 	baseLabel := searchBaseModels[a.searchBaseIdx].label
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %-14s  Base: %-16s  Sort: %s", typeLabel, baseLabel, sortLabel)) + "\n")
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %-14s  Base: %-20s  Sort: %s", typeLabel, baseLabel, sortLabel)) + "\n")
 
 	if a.searchInput {
 		b.WriteString(inputStyle.Render(fmt.Sprintf("Search: %s_", a.searchQuery)) + "\n\n")
