@@ -1,0 +1,70 @@
+name: Auto Tag Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      new_tag: ${{ steps.tag.outputs.new_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: latest
+        run: |
+          tag=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+          echo "tag=${tag:-v0.0.0}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine next version
+        id: tag
+        run: |
+          current="${{ steps.latest.outputs.tag }}"
+          # Strip leading v
+          version="${current#v}"
+          IFS='.' read -r major minor patch <<< "$version"
+
+          # Check commit messages since last tag for version bump signals
+          if [ "$current" = "v0.0.0" ]; then
+            range="HEAD"
+          else
+            range="${current}..HEAD"
+          fi
+
+          commits=$(git log "$range" --pretty=format:"%s" 2>/dev/null || echo "")
+
+          if echo "$commits" | grep -qiE "^(BREAKING|feat!|fix!):"; then
+            major=$((major + 1))
+            minor=0
+            patch=0
+          elif echo "$commits" | grep -qiE "^feat(\(.+\))?:"; then
+            minor=$((minor + 1))
+            patch=0
+          else
+            patch=$((patch + 1))
+          fi
+
+          new_tag="v${major}.${minor}.${patch}"
+          echo "new_tag=$new_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag exists
+        id: check
+        run: |
+          if git rev-parse "${{ steps.tag.outputs.new_tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git tag "${{ steps.tag.outputs.new_tag }}"
+          git push origin "${{ steps.tag.outputs.new_tag }}"
