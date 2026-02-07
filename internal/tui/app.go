@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/burritocatai/civcat/internal/api"
@@ -262,6 +263,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case modelDetailMsg:
+		a.searching = false
 		if msg.err != nil {
 			a.errMsg = msg.err.Error()
 		} else {
@@ -612,6 +614,34 @@ func (a *App) handleUpdatesKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// parseCivitaiURN parses a Civitai AIR URN (e.g. "urn:air:sdxl:checkpoint:civitai:24350@2636109")
+// and returns the model ID and version ID. Version ID is 0 if not present.
+func parseCivitaiURN(s string) (modelID int, versionID int, ok bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "urn:air:") {
+		return 0, 0, false
+	}
+	parts := strings.Split(s, ":")
+	// urn:air:<base>:<type>:civitai:<modelID>@<versionID>
+	if len(parts) != 6 || parts[4] != "civitai" {
+		return 0, 0, false
+	}
+	idPart := parts[5]
+	if idx := strings.Index(idPart, "@"); idx >= 0 {
+		vid, err := strconv.Atoi(idPart[idx+1:])
+		if err != nil {
+			return 0, 0, false
+		}
+		versionID = vid
+		idPart = idPart[:idx]
+	}
+	mid, err := strconv.Atoi(idPart)
+	if err != nil {
+		return 0, 0, false
+	}
+	return mid, versionID, true
+}
+
 // Commands
 
 // reSearch resets pagination and re-searches with current filters.
@@ -628,6 +658,17 @@ func (a *App) reSearch() tea.Cmd {
 
 func (a *App) searchCmd() tea.Cmd {
 	a.searching = true
+
+	// Detect Civitai AIR URN and fetch the model directly.
+	if modelID, _, ok := parseCivitaiURN(a.searchQuery); ok {
+		client := a.client
+		a.prevView = viewSearch
+		return func() tea.Msg {
+			model, err := client.GetModel(modelID)
+			return modelDetailMsg{model: model, err: err}
+		}
+	}
+
 	p := api.SearchParams{
 		Query:     a.searchQuery,
 		ModelType: searchTypes[a.searchTypeIdx].modelType,
