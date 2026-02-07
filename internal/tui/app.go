@@ -36,16 +36,18 @@ type App struct {
 	installedCursor int
 
 	// Search view
-	searchQuery    string
-	searchResults  []api.Model
-	searchCursor   int
-	searchNextPage string // nextPage URL for cursor-based pagination
-	searchHasNext  bool
-	searchPageNum  int // display-only page counter
-	searchTotal    int
-	searching      bool
-	searchInput    bool
-	searchTypeIdx  int // index into searchTypes for category filter
+	searchQuery     string
+	searchResults   []api.Model
+	searchCursor    int
+	searchNextPage  string // nextPage URL for cursor-based pagination
+	searchHasNext   bool
+	searchPageNum   int // display-only page counter
+	searchTotal     int
+	searching       bool
+	searchInput     bool
+	searchTypeIdx   int // index into searchTypes for category filter
+	searchSortIdx   int // index into searchSorts
+	searchBaseIdx   int // index into searchBaseModels
 
 	// Model detail view
 	detailModel   *api.Model
@@ -123,6 +125,33 @@ var searchTypes = []struct {
 	{"Wildcards", api.ModelTypeWildcards},
 	{"MotionModule", api.ModelTypeMotionModule},
 	{"Other", api.ModelTypeOther},
+}
+
+var searchSorts = []struct {
+	label string
+	value string
+}{
+	{"Most Downloaded", "Most Downloaded"},
+	{"Highest Rated", "Highest Rated"},
+	{"Newest", "Newest"},
+}
+
+var searchBaseModels = []struct {
+	label string
+	value string
+}{
+	{"All", ""},
+	{"Flux.1 D", "Flux.1 D"},
+	{"Flux.1 S", "Flux.1 S"},
+	{"Pony", "Pony"},
+	{"SDXL 1.0", "SDXL 1.0"},
+	{"SD 1.5", "SD 1.5"},
+	{"SD 3", "SD 3"},
+	{"SD 3.5", "SD 3.5"},
+	{"SD 3.5 Large", "SD 3.5 Large"},
+	{"SD 3.5 Medium", "SD 3.5 Medium"},
+	{"Illustrious", "Illustrious"},
+	{"Other", "Other"},
 }
 
 type updateCheckMsg struct {
@@ -344,20 +373,22 @@ func (a *App) handleSearchKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.searchQuery = ""
 	case "t":
 		a.searchTypeIdx = (a.searchTypeIdx + 1) % len(searchTypes)
-		if a.searchQuery != "" {
-			a.searchPageNum = 1
-			a.searchNextPage = ""
-			a.searchHasNext = false
-			return a, a.searchCmd()
-		}
+		return a, a.reSearch()
 	case "T":
 		a.searchTypeIdx = (a.searchTypeIdx + len(searchTypes) - 1) % len(searchTypes)
-		if a.searchQuery != "" {
-			a.searchPageNum = 1
-			a.searchNextPage = ""
-			a.searchHasNext = false
-			return a, a.searchCmd()
-		}
+		return a, a.reSearch()
+	case "o":
+		a.searchSortIdx = (a.searchSortIdx + 1) % len(searchSorts)
+		return a, a.reSearch()
+	case "O":
+		a.searchSortIdx = (a.searchSortIdx + len(searchSorts) - 1) % len(searchSorts)
+		return a, a.reSearch()
+	case "b":
+		a.searchBaseIdx = (a.searchBaseIdx + 1) % len(searchBaseModels)
+		return a, a.reSearch()
+	case "B":
+		a.searchBaseIdx = (a.searchBaseIdx + len(searchBaseModels) - 1) % len(searchBaseModels)
+		return a, a.reSearch()
 	case "n":
 		if a.searchHasNext && a.searchNextPage != "" {
 			a.searchPageNum++
@@ -546,13 +577,30 @@ func (a *App) handleUpdatesKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // Commands
 
+// reSearch resets pagination and re-searches with current filters.
+// Returns nil if no query has been entered yet.
+func (a *App) reSearch() tea.Cmd {
+	if a.searchQuery == "" {
+		return nil
+	}
+	a.searchPageNum = 1
+	a.searchNextPage = ""
+	a.searchHasNext = false
+	return a.searchCmd()
+}
+
 func (a *App) searchCmd() tea.Cmd {
 	a.searching = true
-	query := a.searchQuery
-	modelType := searchTypes[a.searchTypeIdx].modelType
+	p := api.SearchParams{
+		Query:     a.searchQuery,
+		ModelType: searchTypes[a.searchTypeIdx].modelType,
+		Sort:      searchSorts[a.searchSortIdx].value,
+		BaseModel: searchBaseModels[a.searchBaseIdx].value,
+		Limit:     20,
+	}
 	client := a.client
 	return func() tea.Msg {
-		results, err := client.SearchModels(query, modelType, 20, "")
+		results, err := client.SearchModels(p)
 		return searchResultMsg{results: results, err: err}
 	}
 }
@@ -744,8 +792,11 @@ func (a *App) viewSearch() string {
 
 	b.WriteString(subtitleStyle.Render("Search Models") + "\n\n")
 
+	// Filter bar
 	typeLabel := searchTypes[a.searchTypeIdx].label
-	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %s", typeLabel)) + "\n")
+	sortLabel := searchSorts[a.searchSortIdx].label
+	baseLabel := searchBaseModels[a.searchBaseIdx].label
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %-14s  Base: %-16s  Sort: %s", typeLabel, baseLabel, sortLabel)) + "\n")
 
 	if a.searchInput {
 		b.WriteString(inputStyle.Render(fmt.Sprintf("Search: %s_", a.searchQuery)) + "\n\n")
@@ -787,7 +838,7 @@ func (a *App) viewSearch() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("  /: new search  t/T: cycle type  enter: details  n: next page  esc: back"))
+	b.WriteString(helpStyle.Render("  /: search  t: type  b: base model  o: sort  n: next page  enter: details  esc: back"))
 
 	return b.String()
 }

@@ -101,22 +101,40 @@ func (c *Client) doRequest(reqURL string) (*http.Response, error) {
 	return resp, nil
 }
 
-// SearchModels searches for models by query string and optional type filter.
-// For the initial search pass an empty cursor. For subsequent pages, pass the
-// NextCursor value from the previous response metadata.
-func (c *Client) SearchModels(query string, modelType ModelType, limit int, cursor string) (*ModelsResponse, error) {
+// SearchParams holds all optional filters for model search.
+type SearchParams struct {
+	Query     string
+	ModelType ModelType
+	Sort      string // "Highest Rated", "Most Downloaded", "Newest"
+	Period    string // "AllTime", "Year", "Month", "Week", "Day"
+	BaseModel string
+	Limit     int
+	Cursor    string
+}
+
+// SearchModels searches for models with optional filters.
+func (c *Client) SearchModels(p SearchParams) (*ModelsResponse, error) {
 	params := url.Values{}
-	if query != "" {
-		params.Set("query", query)
+	if p.Query != "" {
+		params.Set("query", p.Query)
 	}
-	if modelType != "" {
-		params.Set("types", string(modelType))
+	if p.ModelType != "" {
+		params.Set("types", string(p.ModelType))
 	}
-	if limit > 0 {
-		params.Set("limit", strconv.Itoa(limit))
+	if p.Sort != "" {
+		params.Set("sort", p.Sort)
 	}
-	if cursor != "" {
-		params.Set("cursor", cursor)
+	if p.Period != "" {
+		params.Set("period", p.Period)
+	}
+	if p.BaseModel != "" {
+		params.Set("baseModels", p.BaseModel)
+	}
+	if p.Limit > 0 {
+		params.Set("limit", strconv.Itoa(p.Limit))
+	}
+	if p.Cursor != "" {
+		params.Set("cursor", p.Cursor)
 	}
 
 	reqURL := baseURL + "/models?" + params.Encode()
