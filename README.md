@@ -9,6 +9,8 @@ Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 - Browse and search models from the Civitai public API
 - Download models directly into the correct ComfyUI subdirectory
 - Track installed models with version, hash, and install date
+- Delete models from disk with confirmation prompt
+- Export/import model lists for backup or sharing across machines
 - Check for updates across all installed models
 - Configurable API key (env var or config file)
 - Conservative rate limiting to play nice with the API
@@ -91,23 +93,26 @@ Get your API key from [Civitai Account Settings](https://civitai.com/user/accoun
 ## Usage
 
 ```sh
-civcat          # launch the TUI
-civcat config   # reconfigure settings
+civcat                        # launch the TUI
+civcat config                 # reconfigure settings
+civcat export models.json     # export installed models list
+civcat import models.json     # import and download missing models
 ```
 
 ### Keybindings
 
 #### Installed Models (main view)
 
-| Key     | Action                  |
-|---------|-------------------------|
-| `s`     | Search models           |
-| `u`     | Check for updates       |
-| `c`     | Open config             |
-| `enter` | View model details      |
-| `d`     | Remove model from tracking |
-| `j`/`k` | Navigate up/down       |
-| `q`     | Quit                    |
+| Key     | Action                              |
+|---------|-------------------------------------|
+| `s`     | Search models                       |
+| `u`     | Check for updates                   |
+| `c`     | Open config                         |
+| `enter` | View model details                  |
+| `d`     | Delete model (file + tracking)      |
+| `e`     | Export model list to file            |
+| `j`/`k` | Navigate up/down                   |
+| `q`     | Quit                                |
 
 #### Search
 
@@ -115,7 +120,10 @@ civcat config   # reconfigure settings
 |---------|-------------------------|
 | `/`     | New search              |
 | `enter` | View model details      |
-| `n`/`p` | Next/prev page          |
+| `t`/`T` | Cycle model type filter |
+| `b`/`B` | Cycle base model filter |
+| `o`/`O` | Cycle sort order        |
+| `n`     | Next page               |
 | `esc`   | Back to installed       |
 
 #### Model Detail
@@ -134,14 +142,39 @@ civcat config   # reconfigure settings
 | `r`     | Refresh update check    |
 | `esc`   | Back                    |
 
+## Export & Import
+
+Export your installed model list to a JSON file for backup or to replicate your setup on another machine:
+
+```sh
+civcat export my-models.json
+```
+
+You can also press `e` in the TUI to quick-export to `~/.civcat/models-export.json`.
+
+Import on a new machine to automatically download all missing models:
+
+```sh
+civcat import my-models.json
+```
+
+Import will:
+- Compare the export against your currently installed models
+- Prompt for confirmation before downloading
+- Download each missing model with progress output
+- Fall back to the latest version if the original version is no longer available
+- Skip early-access models with a warning
+- Continue on individual failures instead of aborting
+
 ## Data Files
 
 All data lives in `~/.civcat/`:
 
-| File          | Purpose                                    |
-|---------------|--------------------------------------------|
-| `config.json` | ComfyUI path and API key                  |
-| `models.json` | Installed model tracking (IDs, versions, dates) |
+| File                  | Purpose                                         |
+|-----------------------|-------------------------------------------------|
+| `config.json`         | ComfyUI path and API key                       |
+| `models.json`         | Installed model tracking (IDs, versions, dates) |
+| `models-export.json`  | Quick-export from TUI (created on demand)       |
 
 ## Rate Limiting
 
