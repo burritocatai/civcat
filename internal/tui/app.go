@@ -505,8 +505,9 @@ func (a *App) handleSearchInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.searchQuery = a.searchQuery[:len(a.searchQuery)-1]
 		}
 	default:
-		if len(msg.String()) == 1 || msg.String() == " " {
-			a.searchQuery += msg.String()
+		r := msg.Runes
+		if len(r) > 0 {
+			a.searchQuery += string(r)
 		}
 	}
 	return a, nil
@@ -643,8 +644,9 @@ func (a *App) handleConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.configInput = a.configInput[:len(a.configInput)-1]
 		}
 	default:
-		if len(msg.String()) == 1 || msg.String() == " " {
-			a.configInput += msg.String()
+		r := msg.Runes
+		if len(r) > 0 {
+			a.configInput += string(r)
 		}
 	}
 	return a, nil
