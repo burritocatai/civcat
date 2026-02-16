@@ -18,6 +18,18 @@ const (
 	ModelTypeMotionModule      ModelType = "MotionModule"
 	ModelTypeWildcards         ModelType = "Wildcards"
 	ModelTypeWorkflows         ModelType = "Workflows"
+	ModelTypeTextEncoders      ModelType = "TextEncoders"
+	ModelTypeDiffusionModels   ModelType = "DiffusionModels"
+	ModelTypeClipVision        ModelType = "ClipVision"
+	ModelTypeStyleModels       ModelType = "StyleModels"
+	ModelTypeDiffusers         ModelType = "Diffusers"
+	ModelTypeVAEApprox         ModelType = "VAEApprox"
+	ModelTypeGligen            ModelType = "Gligen"
+	ModelTypeLatentUpscale     ModelType = "LatentUpscale"
+	ModelTypePhotomaker        ModelType = "Photomaker"
+	ModelTypeClassifiers       ModelType = "Classifiers"
+	ModelTypeModelPatches      ModelType = "ModelPatches"
+	ModelTypeAudioEncoders     ModelType = "AudioEncoders"
 	ModelTypeOther             ModelType = "Other"
 )
 
