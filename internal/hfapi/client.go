@@ -145,7 +145,7 @@ func (c *Client) SearchModels(p SearchParams) ([]HFModel, error) {
 
 // GetModel fetches a single model by its repo ID (e.g. "stabilityai/stable-diffusion-xl-base-1.0").
 func (c *Client) GetModel(repoID string) (*HFModel, error) {
-	reqURL := baseURL + "/models/" + url.PathEscape(repoID)
+	reqURL := baseURL + "/models/" + repoID
 	resp, err := c.doRequest(reqURL)
 	if err != nil {
 		return nil, err
