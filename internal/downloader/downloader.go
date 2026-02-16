@@ -26,6 +26,18 @@ var modelDirs = map[api.ModelType]string{
 	api.ModelTypeMotionModule:      "models/animatediff_motion_lora",
 	api.ModelTypeWildcards:         "models/wildcards",
 	api.ModelTypeWorkflows:         "models/workflows",
+	api.ModelTypeTextEncoders:      "models/text_encoders",
+	api.ModelTypeDiffusionModels:   "models/diffusion_models",
+	api.ModelTypeClipVision:        "models/clip_vision",
+	api.ModelTypeStyleModels:       "models/style_models",
+	api.ModelTypeDiffusers:         "models/diffusers",
+	api.ModelTypeVAEApprox:         "models/vae_approx",
+	api.ModelTypeGligen:            "models/gligen",
+	api.ModelTypeLatentUpscale:     "models/latent_upscale_models",
+	api.ModelTypePhotomaker:        "models/photomaker",
+	api.ModelTypeClassifiers:       "models/classifiers",
+	api.ModelTypeModelPatches:      "models/model_patches",
+	api.ModelTypeAudioEncoders:     "models/audio_encoders",
 	api.ModelTypeOther:             "models/other",
 }
 

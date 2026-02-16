@@ -29,6 +29,7 @@ type InstalledModel struct {
 	Creator        string        `json:"creator"`
 	HasUpdate      bool          `json:"has_update,omitempty"`
 	LatestVersion  int           `json:"latest_version,omitempty"`
+	Source         string        `json:"source,omitempty"` // "civitai" (default) or "huggingface"
 }
 
 type Tracker struct {
@@ -90,9 +91,16 @@ func (t *Tracker) Add(m InstalledModel) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Replace if same model+version already tracked.
+	// Replace if same model already tracked.
 	for i, existing := range t.Models {
-		if existing.ModelID == m.ModelID {
+		// For HF models, match by repo name + filename so different files
+		// from the same repo (e.g. VAE and diffusion_model) are tracked separately.
+		if m.Source == "huggingface" && existing.Source == "huggingface" &&
+			existing.ModelName == m.ModelName && existing.FileName == m.FileName {
+			t.Models[i] = m
+			return t.saveUnlocked()
+		}
+		if m.Source != "huggingface" && existing.ModelID == m.ModelID && existing.ModelID != 0 {
 			t.Models[i] = m
 			return t.saveUnlocked()
 		}
@@ -107,7 +115,21 @@ func (t *Tracker) Remove(modelID int) error {
 	defer t.mu.Unlock()
 
 	for i, m := range t.Models {
-		if m.ModelID == modelID {
+		if m.ModelID == modelID && m.Source != "huggingface" {
+			t.Models = append(t.Models[:i], t.Models[i+1:]...)
+			return t.saveUnlocked()
+		}
+	}
+	return nil
+}
+
+// RemoveHF removes a HuggingFace model by repo name and filename.
+func (t *Tracker) RemoveHF(modelName, fileName string) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for i, m := range t.Models {
+		if m.Source == "huggingface" && m.ModelName == modelName && m.FileName == fileName {
 			t.Models = append(t.Models[:i], t.Models[i+1:]...)
 			return t.saveUnlocked()
 		}
@@ -124,6 +146,9 @@ func (t *Tracker) GetAll() []InstalledModel {
 }
 
 func (t *Tracker) IsInstalled(modelID int) bool {
+	if modelID == 0 {
+		return false
+	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	for _, m := range t.Models {
@@ -135,6 +160,9 @@ func (t *Tracker) IsInstalled(modelID int) bool {
 }
 
 func (t *Tracker) GetByModelID(modelID int) *InstalledModel {
+	if modelID == 0 {
+		return nil
+	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	for _, m := range t.Models {
@@ -144,6 +172,30 @@ func (t *Tracker) GetByModelID(modelID int) *InstalledModel {
 		}
 	}
 	return nil
+}
+
+// IsInstalledByName checks if a model is installed by name (used for HuggingFace models).
+func (t *Tracker) IsInstalledByName(name string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, m := range t.Models {
+		if m.ModelName == name {
+			return true
+		}
+	}
+	return false
+}
+
+// IsInstalledHF checks if a specific HuggingFace file is installed by repo name and filename.
+func (t *Tracker) IsInstalledHF(repoName, fileName string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, m := range t.Models {
+		if m.Source == "huggingface" && m.ModelName == repoName && m.FileName == fileName {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Tracker) MarkUpdate(modelID, latestVersionID int) error {

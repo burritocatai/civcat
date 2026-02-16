@@ -1,19 +1,19 @@
 # civcat
 
-A terminal UI for managing [Civitai](https://civitai.com) models in your [ComfyUI](https://github.com/comfyanonymous/ComfyUI) installation.
+A terminal UI for managing [Civitai](https://civitai.com) and [Hugging Face](https://huggingface.co) models in your [ComfyUI](https://github.com/comfyanonymous/ComfyUI) installation.
 
 Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
 ## Features
 
-- Browse and search models from the Civitai public API
+- Browse and search models from Civitai and Hugging Face
 - Download models directly into the correct ComfyUI subdirectory
 - Track installed models with version, hash, and install date
 - Delete models from disk with confirmation prompt
 - Export/import model lists for backup or sharing across machines
 - Check for updates across all installed models
-- Configurable API key (env var or config file)
-- Conservative rate limiting to play nice with the API
+- Configurable API keys for Civitai and Hugging Face (env var or config file)
+- Conservative rate limiting to play nice with both APIs
 
 ## Model Directory Mapping
 
@@ -30,6 +30,8 @@ civcat installs models into the standard ComfyUI directory structure:
 | Hypernetwork      | `models/hypernetworks/`      |
 | MotionModule      | `models/animatediff_motion_lora/` |
 | Wildcards         | `models/wildcards/`          |
+
+When downloading from Hugging Face, you select the model type manually so the file lands in the right directory.
 
 ## Installation
 
@@ -55,6 +57,7 @@ sudo mv civcat /usr/local/bin/
 docker build -t civcat .
 docker run -it --rm \
   -e CIVITAI_API_KEY=your_key_here \
+  -e HF_TOKEN=your_hf_token_here \
   -v /path/to/ComfyUI:/comfyui \
   -v civcat-data:/root/.civcat \
   civcat
@@ -66,7 +69,7 @@ The container expects:
 
 ## Configuration
 
-On first run civcat prompts for your ComfyUI path and API key. You can reconfigure at any time:
+On first run civcat prompts for your ComfyUI path, Civitai API key, and Hugging Face token. You can reconfigure at any time:
 
 ```sh
 civcat config
@@ -77,11 +80,12 @@ Or edit the config directly at `~/.civcat/config.json`:
 ```json
 {
   "comfyui_path": "/path/to/ComfyUI",
-  "api_key": "your_civitai_api_key"
+  "api_key": "your_civitai_api_key",
+  "hf_token": "your_huggingface_token"
 }
 ```
 
-### API Key
+### Civitai API Key
 
 Set your key one of two ways (env var takes priority):
 
@@ -89,6 +93,15 @@ Set your key one of two ways (env var takes priority):
 2. **Config file**: set via `civcat config` or edit `~/.civcat/config.json`
 
 Get your API key from [Civitai Account Settings](https://civitai.com/user/account).
+
+### Hugging Face Token
+
+Set your token one of two ways (env var takes priority):
+
+1. **Environment variable**: `export HF_TOKEN=your_token`
+2. **Config file**: set via `civcat config` or edit `~/.civcat/config.json`
+
+Get your token from [Hugging Face Settings](https://huggingface.co/settings/tokens). A token is optional for public models but required for gated models (e.g. Stable Diffusion 3, Flux).
 
 ## Usage
 
@@ -105,7 +118,8 @@ civcat import models.json     # import and download missing models
 
 | Key     | Action                              |
 |---------|-------------------------------------|
-| `s`     | Search models                       |
+| `s`     | Search Civitai models               |
+| `h`     | Search Hugging Face models          |
 | `u`     | Check for updates                   |
 | `c`     | Open config                         |
 | `enter` | View model details                  |
@@ -114,7 +128,7 @@ civcat import models.json     # import and download missing models
 | `j`/`k` | Navigate up/down                   |
 | `q`     | Quit                                |
 
-#### Search
+#### Civitai Search
 
 | Key     | Action                  |
 |---------|-------------------------|
@@ -126,7 +140,27 @@ civcat import models.json     # import and download missing models
 | `n`     | Next page               |
 | `esc`   | Back to installed       |
 
-#### Model Detail
+#### Hugging Face Search
+
+| Key     | Action                        |
+|---------|-------------------------------|
+| `/`     | New search                    |
+| `enter` | View model details and files  |
+| `t`/`T` | Cycle pipeline tag filter     |
+| `o`/`O` | Cycle sort order              |
+| `esc`   | Back to installed             |
+
+#### Hugging Face Model Detail
+
+| Key     | Action                              |
+|---------|-------------------------------------|
+| `enter` | Download selected file              |
+| `i`     | Download selected file              |
+| `t`/`T` | Cycle model type (for directory)   |
+| `j`/`k` | Navigate files                     |
+| `esc`   | Back to search                      |
+
+#### Civitai Model Detail
 
 | Key     | Action                  |
 |---------|-------------------------|
@@ -172,13 +206,17 @@ All data lives in `~/.civcat/`:
 
 | File                  | Purpose                                         |
 |-----------------------|-------------------------------------------------|
-| `config.json`         | ComfyUI path and API key                       |
+| `config.json`         | ComfyUI path, Civitai API key, and HF token    |
 | `models.json`         | Installed model tracking (IDs, versions, dates) |
 | `models-export.json`  | Quick-export from TUI (created on demand)       |
 
 ## Rate Limiting
 
-civcat uses a token-bucket rate limiter (2 requests/second, burst of 5) and automatically retries on HTTP 429 responses using the `Retry-After` header. This keeps usage well within Civitai's limits.
+civcat uses token-bucket rate limiters for both APIs:
+- **Civitai**: 2 requests/second, burst of 5
+- **Hugging Face**: 5 requests/second, burst of 10
+
+Both automatically retry on HTTP 429 responses using the `Retry-After` header.
 
 ## License
 
