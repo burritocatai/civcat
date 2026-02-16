@@ -25,7 +25,7 @@ var modelDirs = map[api.ModelType]string{
 	api.ModelTypeUpscaler:          "models/upscale_models",
 	api.ModelTypeMotionModule:      "models/animatediff_motion_lora",
 	api.ModelTypeWildcards:         "models/wildcards",
-	api.ModelTypeWorkflows:         "models/workflows",
+	api.ModelTypeWorkflows:         "user/default/workflows",
 	api.ModelTypeTextEncoders:      "models/text_encoders",
 	api.ModelTypeDiffusionModels:   "models/diffusion_models",
 	api.ModelTypeClipVision:        "models/clip_vision",
