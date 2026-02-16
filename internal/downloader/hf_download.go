@@ -72,7 +72,12 @@ func DownloadHF(
 			useParallel = false
 		} else {
 			downloaded = n
-			if err := os.Rename(tmpPath, targetPath); err != nil {
+			if modelType == api.ModelTypeWorkflows && isZipFile(baseName) {
+				if err := extractZip(tmpPath, targetDir); err != nil {
+					return nil, fmt.Errorf("extracting workflow zip: %w", err)
+				}
+				targetPath = targetDir
+			} else if err := os.Rename(tmpPath, targetPath); err != nil {
 				return nil, fmt.Errorf("moving file to destination: %w", err)
 			}
 		}
@@ -123,7 +128,12 @@ func DownloadHF(
 
 		tmpFile.Close()
 
-		if err := os.Rename(tmpPath, targetPath); err != nil {
+		if modelType == api.ModelTypeWorkflows && isZipFile(baseName) {
+			if err := extractZip(tmpPath, targetDir); err != nil {
+				return nil, fmt.Errorf("extracting workflow zip: %w", err)
+			}
+			targetPath = targetDir
+		} else if err := os.Rename(tmpPath, targetPath); err != nil {
 			return nil, fmt.Errorf("moving file to destination: %w", err)
 		}
 	}

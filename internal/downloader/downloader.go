@@ -1,11 +1,13 @@
 package downloader
 
 import (
+	"archive/zip"
 	"fmt"
 	"io"
 	"mime"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/burritocatai/civcat/internal/api"
@@ -150,9 +152,18 @@ func Download(
 
 	tmpFile.Close()
 
-	// Move temp file to final location.
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		return nil, fmt.Errorf("moving file to destination: %w", err)
+	// For workflow zip files, extract contents to the target directory.
+	if model.Type == api.ModelTypeWorkflows && isZipFile(fileName) {
+		if err := extractZip(tmpPath, targetDir); err != nil {
+			return nil, fmt.Errorf("extracting workflow zip: %w", err)
+		}
+		// targetPath becomes the directory for tracking purposes.
+		targetPath = targetDir
+	} else {
+		// Move temp file to final location.
+		if err := os.Rename(tmpPath, targetPath); err != nil {
+			return nil, fmt.Errorf("moving file to destination: %w", err)
+		}
 	}
 
 	fileHash := ""
@@ -187,4 +198,65 @@ func Download(
 	}
 
 	return installed, nil
+}
+
+// isZipFile returns true if the filename has a .zip extension.
+func isZipFile(name string) bool {
+	return strings.EqualFold(filepath.Ext(name), ".zip")
+}
+
+// extractZip extracts a zip archive to the given directory.
+// It skips entries that would escape the target directory (zip slip protection).
+func extractZip(zipPath, targetDir string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("opening zip: %w", err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		destPath := filepath.Join(targetDir, f.Name)
+
+		// Zip slip protection.
+		if !strings.HasPrefix(filepath.Clean(destPath), filepath.Clean(targetDir)+string(os.PathSeparator)) {
+			continue
+		}
+
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(destPath, 0o755); err != nil {
+				return fmt.Errorf("creating directory %s: %w", f.Name, err)
+			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+			return fmt.Errorf("creating parent directory for %s: %w", f.Name, err)
+		}
+
+		if err := extractZipFile(f, destPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func extractZipFile(f *zip.File, destPath string) error {
+	rc, err := f.Open()
+	if err != nil {
+		return fmt.Errorf("opening zip entry %s: %w", f.Name, err)
+	}
+	defer rc.Close()
+
+	out, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("creating file %s: %w", destPath, err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, rc); err != nil {
+		return fmt.Errorf("extracting %s: %w", f.Name, err)
+	}
+
+	return nil
 }
