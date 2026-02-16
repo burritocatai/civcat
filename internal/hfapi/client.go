@@ -159,24 +159,10 @@ func (c *Client) GetModel(repoID string) (*HFModel, error) {
 	return &model, nil
 }
 
-// DownloadFile downloads a file from a HF repo and returns the response body (caller must close).
-func (c *Client) DownloadFile(repoID, filename string) (*http.Response, error) {
-	c.waitForToken()
-
-	dlURL := fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s",
-		repoID, url.PathEscape(filename))
-
-	req, err := http.NewRequest("GET", dlURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating download request: %w", err)
-	}
-
-	req.Header.Set("User-Agent", "civcat/1.0")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-
-	client := &http.Client{
+// downloadClient returns an HTTP client configured for large file downloads
+// with cross-domain redirect handling.
+func (c *Client) downloadClient() *http.Client {
+	return &http.Client{
 		Timeout: 0, // no timeout for large downloads
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -189,8 +175,101 @@ func (c *Client) DownloadFile(repoID, filename string) (*http.Response, error) {
 			return nil
 		},
 	}
+}
 
-	resp, err := client.Do(req)
+// FileURL returns the download URL for a file in a HF repo.
+func (c *Client) FileURL(repoID, filename string) string {
+	return fmt.Sprintf("https://huggingface.co/%s/resolve/main/%s",
+		repoID, url.PathEscape(filename))
+}
+
+// FileInfo holds metadata from a HEAD request for a remote file.
+type FileInfo struct {
+	Size          int64
+	AcceptRanges  bool
+}
+
+// HeadFile performs a HEAD request to get file size and range support.
+func (c *Client) HeadFile(repoID, filename string) (*FileInfo, error) {
+	c.waitForToken()
+
+	dlURL := c.FileURL(repoID, filename)
+
+	req, err := http.NewRequest("HEAD", dlURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating HEAD request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "civcat/1.0")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.downloadClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HEAD request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HEAD error %d", resp.StatusCode)
+	}
+
+	return &FileInfo{
+		Size:         resp.ContentLength,
+		AcceptRanges: resp.Header.Get("Accept-Ranges") == "bytes",
+	}, nil
+}
+
+// DownloadRange downloads a byte range of a file from a HF repo.
+// The caller must close the response body.
+func (c *Client) DownloadRange(repoID, filename string, start, end int64) (*http.Response, error) {
+	c.waitForToken()
+
+	dlURL := c.FileURL(repoID, filename)
+
+	req, err := http.NewRequest("GET", dlURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating range request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "civcat/1.0")
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.downloadClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("range download: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusPartialContent {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("range download error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return resp, nil
+}
+
+// DownloadFile downloads a file from a HF repo and returns the response body (caller must close).
+func (c *Client) DownloadFile(repoID, filename string) (*http.Response, error) {
+	c.waitForToken()
+
+	dlURL := c.FileURL(repoID, filename)
+
+	req, err := http.NewRequest("GET", dlURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating download request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "civcat/1.0")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.downloadClient().Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("downloading: %w", err)
 	}

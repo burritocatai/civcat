@@ -14,6 +14,8 @@ import (
 
 // DownloadHF downloads a file from a Hugging Face model repo and installs it
 // to the proper ComfyUI directory based on the given model type.
+// It uses parallel chunk downloading when the server supports range requests
+// and the file is large enough to benefit from it.
 func DownloadHF(
 	client *hfapi.Client,
 	model *hfapi.HFModel,
@@ -30,58 +32,100 @@ func DownloadHF(
 		return nil, fmt.Errorf("creating target directory: %w", err)
 	}
 
-	// Start download.
-	resp, err := client.DownloadFile(model.ID, filename)
-	if err != nil {
-		return nil, fmt.Errorf("downloading from HuggingFace: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Use just the base filename (HF files can have subdirectory paths).
 	baseName := filepath.Base(filename)
 	targetPath := filepath.Join(targetDir, baseName)
 
-	// Write to temp file first, then rename.
-	tmpFile, err := os.CreateTemp(targetDir, ".civcat-hf-dl-*")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpPath := tmpFile.Name()
-	defer func() {
-		tmpFile.Close()
-		os.Remove(tmpPath)
-	}()
-
-	totalBytes := resp.ContentLength
+	// Check if parallel download is possible.
 	var downloaded int64
+	var totalBytes int64
 
-	buf := make([]byte, 32*1024)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
-				return nil, fmt.Errorf("writing file: %w", writeErr)
+	info, headErr := client.HeadFile(model.ID, filename)
+	useParallel := headErr == nil && info.AcceptRanges && info.Size >= minParallelSize
+
+	if useParallel {
+		totalBytes = info.Size
+
+		// Send initial progress.
+		if progressCh != nil {
+			progressCh <- Progress{
+				BytesDownloaded: 0,
+				TotalBytes:      totalBytes,
 			}
-			downloaded += int64(n)
+		}
+
+		tmpPath := filepath.Join(targetDir, ".civcat-hf-dl-parallel-"+baseName)
+		defer os.Remove(tmpPath)
+
+		progressFn := func(dl int64) {
 			if progressCh != nil {
 				progressCh <- Progress{
-					BytesDownloaded: downloaded,
+					BytesDownloaded: dl,
 					TotalBytes:      totalBytes,
 				}
 			}
 		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				break
+
+		n, err := parallelDownload(client, model.ID, filename, totalBytes, tmpPath, progressFn)
+		if err != nil {
+			// Clean up and fall back to single-stream.
+			os.Remove(tmpPath)
+			useParallel = false
+		} else {
+			downloaded = n
+			if err := os.Rename(tmpPath, targetPath); err != nil {
+				return nil, fmt.Errorf("moving file to destination: %w", err)
 			}
-			return nil, fmt.Errorf("reading response: %w", readErr)
 		}
 	}
 
-	tmpFile.Close()
+	if !useParallel {
+		// Fall back to single-stream download.
+		resp, err := client.DownloadFile(model.ID, filename)
+		if err != nil {
+			return nil, fmt.Errorf("downloading from HuggingFace: %w", err)
+		}
+		defer resp.Body.Close()
 
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		return nil, fmt.Errorf("moving file to destination: %w", err)
+		tmpFile, err := os.CreateTemp(targetDir, ".civcat-hf-dl-*")
+		if err != nil {
+			return nil, fmt.Errorf("creating temp file: %w", err)
+		}
+		tmpPath := tmpFile.Name()
+		defer func() {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+		}()
+
+		totalBytes = resp.ContentLength
+
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, writeErr := tmpFile.Write(buf[:n]); writeErr != nil {
+					return nil, fmt.Errorf("writing file: %w", writeErr)
+				}
+				downloaded += int64(n)
+				if progressCh != nil {
+					progressCh <- Progress{
+						BytesDownloaded: downloaded,
+						TotalBytes:      totalBytes,
+					}
+				}
+			}
+			if readErr != nil {
+				if readErr == io.EOF {
+					break
+				}
+				return nil, fmt.Errorf("reading response: %w", readErr)
+			}
+		}
+
+		tmpFile.Close()
+
+		if err := os.Rename(tmpPath, targetPath); err != nil {
+			return nil, fmt.Errorf("moving file to destination: %w", err)
+		}
 	}
 
 	installed := &tracker.InstalledModel{
