@@ -15,6 +15,7 @@ const (
 type Config struct {
 	ComfyUIPath string `json:"comfyui_path"`
 	APIKey      string `json:"api_key,omitempty"`
+	HFToken     string `json:"hf_token,omitempty"`
 }
 
 func configPath() (string, error) {
@@ -56,6 +57,9 @@ func Load() (*Config, error) {
 	if envKey := os.Getenv("CIVITAI_API_KEY"); envKey != "" {
 		cfg.APIKey = envKey
 	}
+	if hfToken := os.Getenv("HF_TOKEN"); hfToken != "" {
+		cfg.HFToken = hfToken
+	}
 
 	return &cfg, nil
 }
@@ -92,4 +96,12 @@ func (c *Config) GetAPIKey() string {
 		return envKey
 	}
 	return c.APIKey
+}
+
+// GetHFToken returns the Hugging Face token from env var or config.
+func (c *Config) GetHFToken() string {
+	if token := os.Getenv("HF_TOKEN"); token != "" {
+		return token
+	}
+	return c.HFToken
 }

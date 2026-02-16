@@ -9,6 +9,7 @@ import (
 	"github.com/burritocatai/civcat/internal/api"
 	"github.com/burritocatai/civcat/internal/config"
 	"github.com/burritocatai/civcat/internal/downloader"
+	"github.com/burritocatai/civcat/internal/hfapi"
 	"github.com/burritocatai/civcat/internal/tracker"
 	"github.com/burritocatai/civcat/internal/tui"
 	tea "github.com/charmbracelet/bubbletea"
@@ -56,13 +57,14 @@ func runApp(cmd *cobra.Command, args []string) error {
 	}
 
 	client := api.NewClient(cfg.GetAPIKey())
+	hfClient := hfapi.NewClient(cfg.GetHFToken())
 
 	trk, err := tracker.New()
 	if err != nil {
 		return fmt.Errorf("initializing tracker: %w", err)
 	}
 
-	app := tui.NewApp(cfg, client, trk)
+	app := tui.NewApp(cfg, client, hfClient, trk)
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("running TUI: %w", err)
@@ -263,11 +265,11 @@ func interactiveConfig(cfg *config.Config) error {
 		cfg.ComfyUIPath = line
 	}
 
-	// API key
+	// Civitai API key
 	currentKey := cfg.APIKey
 	envKey := os.Getenv("CIVITAI_API_KEY")
 	if envKey != "" {
-		fmt.Println("API key is set via CIVITAI_API_KEY environment variable.")
+		fmt.Println("Civitai API key is set via CIVITAI_API_KEY environment variable.")
 	} else {
 		display := "(not set)"
 		if currentKey != "" {
@@ -278,6 +280,24 @@ func interactiveConfig(cfg *config.Config) error {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			cfg.APIKey = line
+		}
+	}
+
+	// HuggingFace token
+	currentHF := cfg.HFToken
+	hfEnv := os.Getenv("HF_TOKEN")
+	if hfEnv != "" {
+		fmt.Println("HuggingFace token is set via HF_TOKEN environment variable.")
+	} else {
+		display := "(not set)"
+		if currentHF != "" {
+			display = currentHF[:4] + "..." + currentHF[len(currentHF)-4:]
+		}
+		fmt.Printf("HuggingFace token [%s]: ", display)
+		line, _ = reader.ReadString('\n')
+		line = strings.TrimSpace(line)
+		if line != "" {
+			cfg.HFToken = line
 		}
 	}
 

@@ -29,6 +29,7 @@ type InstalledModel struct {
 	Creator        string        `json:"creator"`
 	HasUpdate      bool          `json:"has_update,omitempty"`
 	LatestVersion  int           `json:"latest_version,omitempty"`
+	Source         string        `json:"source,omitempty"` // "civitai" (default) or "huggingface"
 }
 
 type Tracker struct {
@@ -90,9 +91,14 @@ func (t *Tracker) Add(m InstalledModel) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Replace if same model+version already tracked.
+	// Replace if same model already tracked.
 	for i, existing := range t.Models {
-		if existing.ModelID == m.ModelID {
+		// For HF models (ModelID=0), match by name.
+		if m.Source == "huggingface" && existing.ModelName == m.ModelName {
+			t.Models[i] = m
+			return t.saveUnlocked()
+		}
+		if m.Source != "huggingface" && existing.ModelID == m.ModelID && existing.ModelID != 0 {
 			t.Models[i] = m
 			return t.saveUnlocked()
 		}
@@ -144,6 +150,18 @@ func (t *Tracker) GetByModelID(modelID int) *InstalledModel {
 		}
 	}
 	return nil
+}
+
+// IsInstalledByName checks if a model is installed by name (used for HuggingFace models).
+func (t *Tracker) IsInstalledByName(name string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	for _, m := range t.Models {
+		if m.ModelName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Tracker) MarkUpdate(modelID, latestVersionID int) error {

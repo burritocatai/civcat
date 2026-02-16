@@ -9,6 +9,7 @@ import (
 	"github.com/burritocatai/civcat/internal/api"
 	"github.com/burritocatai/civcat/internal/config"
 	"github.com/burritocatai/civcat/internal/downloader"
+	"github.com/burritocatai/civcat/internal/hfapi"
 	"github.com/burritocatai/civcat/internal/tracker"
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,12 +23,15 @@ const (
 	viewModelDetail
 	viewConfig
 	viewUpdates
+	viewHFSearch
+	viewHFDetail
 )
 
 type App struct {
-	cfg     *config.Config
-	client  *api.Client
-	tracker *tracker.Tracker
+	cfg      *config.Config
+	client   *api.Client
+	hfClient *hfapi.Client
+	tracker  *tracker.Tracker
 
 	currentView  view
 	width        int
@@ -61,6 +65,21 @@ type App struct {
 	updatesChecked  bool
 	updateResults   []updateResult
 
+	// HuggingFace search view
+	hfSearchQuery   string
+	hfSearchResults []hfapi.HFModel
+	hfSearchCursor  int
+	hfSearching     bool
+	hfSearchInput   bool
+	hfFilterIdx     int // index into hfFilters for pipeline tag filter
+	hfSortIdx       int // index into hfSorts
+
+	// HuggingFace detail view
+	hfDetailModel   *hfapi.HFModel
+	hfDetailFiles   []hfapi.Sibling // downloadable files only
+	hfDetailCursor  int
+	hfDetailTypeIdx int // model type for ComfyUI directory mapping
+
 	// Download state
 	downloading      bool
 	downloadName     string
@@ -73,7 +92,7 @@ type App struct {
 	// Config view
 	configCursor int
 	configEdit   int // -1 = not editing, 0 = path, 1 = apikey
-	configInput  string
+	configInput  string // -1 = not editing, 0 = path, 1 = apikey, 2 = hftoken
 	firstRun     bool
 
 	// Delete confirmation
@@ -197,15 +216,69 @@ var searchBaseModels = []struct {
 	{"Other", "Other"},
 }
 
+// HuggingFace messages
+type hfSearchResultMsg struct {
+	results []hfapi.HFModel
+	err     error
+}
+
+type hfModelDetailMsg struct {
+	model *hfapi.HFModel
+	err   error
+}
+
+// hfFilters is the list of pipeline tag filters for HF search.
+var hfFilters = []struct {
+	label string
+	value string
+}{
+	{"All", ""},
+	{"Text-to-Image", "text-to-image"},
+	{"Image-to-Image", "image-to-image"},
+	{"Image-to-Video", "image-to-video"},
+	{"Text-to-Video", "text-to-video"},
+	{"Unconditional Generation", "unconditional-image-generation"},
+	{"Image Upscaling", "image-super-resolution"},
+	{"Inpainting", "image-inpainting"},
+	{"Image Classification", "image-classification"},
+	{"Depth Estimation", "depth-estimation"},
+	{"Image Segmentation", "image-segmentation"},
+}
+
+var hfSorts = []struct {
+	label string
+	value string
+}{
+	{"Most Downloads", "downloads"},
+	{"Most Likes", "likes"},
+	{"Recently Updated", "lastModified"},
+}
+
+// hfModelTypes maps selectable types for ComfyUI directory placement.
+var hfModelTypes = []struct {
+	label     string
+	modelType api.ModelType
+}{
+	{"Checkpoint", api.ModelTypeCheckpoint},
+	{"LORA", api.ModelTypeLORA},
+	{"VAE", api.ModelTypeVAE},
+	{"Controlnet", api.ModelTypeControlnet},
+	{"Upscaler", api.ModelTypeUpscaler},
+	{"Embedding", api.ModelTypeTextualInversion},
+	{"Hypernetwork", api.ModelTypeHypernetwork},
+	{"Other", api.ModelTypeOther},
+}
+
 type updateCheckMsg struct {
 	results []updateResult
 	err     error
 }
 
-func NewApp(cfg *config.Config, client *api.Client, trk *tracker.Tracker) *App {
+func NewApp(cfg *config.Config, client *api.Client, hfClient *hfapi.Client, trk *tracker.Tracker) *App {
 	a := &App{
 		cfg:              cfg,
 		client:           client,
+		hfClient:         hfClient,
 		tracker:          trk,
 		currentView:      viewInstalled,
 		installedModels:  trk.GetAll(),
@@ -244,7 +317,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Global keys
 		switch msg.String() {
 		case "ctrl+c", "q":
-			if a.searchInput || a.configEdit >= 0 || a.confirmDelete {
+			if a.searchInput || a.hfSearchInput || a.configEdit >= 0 || a.confirmDelete {
 				// Don't quit while editing or confirming
 			} else {
 				return a, tea.Quit
@@ -308,6 +381,37 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.downloadProgress = progressModel.(progress.Model)
 		return a, cmd
 
+	case hfSearchResultMsg:
+		a.hfSearching = false
+		if msg.err != nil {
+			a.errMsg = msg.err.Error()
+		} else {
+			a.hfSearchResults = msg.results
+			a.hfSearchCursor = 0
+			a.errMsg = ""
+		}
+		return a, nil
+
+	case hfModelDetailMsg:
+		a.hfSearching = false
+		if msg.err != nil {
+			a.errMsg = msg.err.Error()
+		} else {
+			a.hfDetailModel = msg.model
+			// Filter to only downloadable files.
+			a.hfDetailFiles = nil
+			for _, s := range msg.model.Siblings {
+				if s.IsDownloadable() {
+					a.hfDetailFiles = append(a.hfDetailFiles, s)
+				}
+			}
+			a.hfDetailCursor = 0
+			a.hfDetailTypeIdx = 0
+			a.currentView = viewHFDetail
+			a.errMsg = ""
+		}
+		return a, nil
+
 	case updateCheckMsg:
 		a.checkingUpdates = false
 		a.updatesChecked = true
@@ -335,6 +439,9 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.searchInput {
 		return a.handleSearchInput(msg)
 	}
+	if a.hfSearchInput {
+		return a.handleHFSearchInput(msg)
+	}
 	if a.configEdit >= 0 {
 		return a.handleConfigInput(msg)
 	}
@@ -350,6 +457,10 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleConfigKeys(msg)
 	case viewUpdates:
 		return a.handleUpdatesKeys(msg)
+	case viewHFSearch:
+		return a.handleHFSearchKeys(msg)
+	case viewHFDetail:
+		return a.handleHFDetailKeys(msg)
 	}
 	return a, nil
 }
@@ -398,6 +509,10 @@ func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.currentView = viewSearch
 		a.searchInput = true
 		a.searchQuery = ""
+	case "h":
+		a.currentView = viewHFSearch
+		a.hfSearchInput = true
+		a.hfSearchQuery = ""
 	case "c":
 		a.currentView = viewConfig
 		a.configCursor = 0
@@ -570,15 +685,18 @@ func (a *App) handleConfigKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.configCursor--
 		}
 	case "down", "j":
-		if a.configCursor < 1 {
+		if a.configCursor < 2 {
 			a.configCursor++
 		}
 	case "enter":
 		a.configEdit = a.configCursor
-		if a.configCursor == 0 {
+		switch a.configCursor {
+		case 0:
 			a.configInput = a.cfg.ComfyUIPath
-		} else {
+		case 1:
 			a.configInput = a.cfg.APIKey
+		case 2:
+			a.configInput = a.cfg.HFToken
 		}
 	}
 	return a, nil
@@ -604,16 +722,29 @@ func (a *App) handleConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.statusMsg = "ComfyUI path saved"
 				return a, nil
 			}
-		} else {
+		} else if a.configEdit == 1 {
 			a.cfg.APIKey = a.configInput
 			a.client = api.NewClient(a.cfg.GetAPIKey())
+			a.cfg.Save()
+
+			// During first run, advance to HF token field.
+			if a.firstRun {
+				a.configEdit = 2
+				a.configCursor = 2
+				a.configInput = ""
+				a.statusMsg = "Civitai API key saved"
+				return a, nil
+			}
+		} else if a.configEdit == 2 {
+			a.cfg.HFToken = a.configInput
+			a.hfClient = hfapi.NewClient(a.cfg.GetHFToken())
 			a.cfg.Save()
 
 			// First run complete — go to main view.
 			if a.firstRun {
 				a.firstRun = false
 				a.currentView = viewInstalled
-				a.statusMsg = "Setup complete! Press 's' to search for models."
+				a.statusMsg = "Setup complete! Press 's' to search Civitai, 'h' to search HuggingFace."
 				a.errMsg = ""
 				return a, nil
 			}
@@ -627,14 +758,15 @@ func (a *App) handleConfigInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.errMsg = "Please set a ComfyUI path before continuing"
 			return a, nil
 		}
-		if a.firstRun && a.configEdit == 1 {
-			// Allow skipping API key during first run.
+		if a.firstRun && (a.configEdit == 1 || a.configEdit == 2) {
+			// Allow skipping API keys during first run.
 			a.firstRun = false
 			a.configEdit = -1
 			a.currentView = viewInstalled
 			a.client = api.NewClient(a.cfg.GetAPIKey())
+			a.hfClient = hfapi.NewClient(a.cfg.GetHFToken())
 			a.cfg.Save()
-			a.statusMsg = "Setup complete! Press 's' to search for models."
+			a.statusMsg = "Setup complete! Press 's' to search Civitai, 'h' to search HuggingFace."
 			a.errMsg = ""
 			return a, nil
 		}
@@ -845,6 +977,10 @@ func (a *App) View() string {
 		b.WriteString(a.viewConfig())
 	case viewUpdates:
 		b.WriteString(a.viewUpdatesView())
+	case viewHFSearch:
+		b.WriteString(a.viewHFSearch())
+	case viewHFDetail:
+		b.WriteString(a.viewHFDetail())
 	}
 
 	// Status bar
@@ -883,7 +1019,7 @@ func (a *App) viewInstalled() string {
 	b.WriteString(subtitleStyle.Render("Installed Models") + "\n\n")
 
 	if len(a.installedModels) == 0 {
-		b.WriteString(mutedStyle.Render("  No models installed. Press 's' to search and install models.") + "\n")
+		b.WriteString(mutedStyle.Render("  No models installed. Press 's' to search Civitai, 'h' for HuggingFace.") + "\n")
 	} else {
 		for i, m := range a.installedModels {
 			prefix := "  "
@@ -901,6 +1037,9 @@ func (a *App) viewInstalled() string {
 				m.Creator,
 			)
 
+			if m.Source == "huggingface" {
+				line += mutedStyle.Render(" [HF]")
+			}
 			if m.HasUpdate {
 				line += warningStyle.Render(" [UPDATE]")
 			}
@@ -913,7 +1052,7 @@ func (a *App) viewInstalled() string {
 	if a.confirmDelete && a.deleteCandidate != nil {
 		b.WriteString(warningStyle.Render(fmt.Sprintf("  Delete %s and remove file from disk? (y/N)", a.deleteCandidate.ModelName)))
 	} else {
-		b.WriteString(helpStyle.Render("  s: search  u: check updates  c: config  enter: details  d: delete  e: export  q: quit"))
+		b.WriteString(helpStyle.Render("  s: search civitai  h: search huggingface  u: updates  c: config  enter: details  d: delete  e: export  q: quit"))
 	}
 
 	return b.String()
@@ -1053,7 +1192,8 @@ func (a *App) viewConfig() string {
 		value string
 	}{
 		{"ComfyUI Path", a.cfg.ComfyUIPath},
-		{"API Key", maskKey(a.cfg.GetAPIKey())},
+		{"Civitai API Key", maskKey(a.cfg.GetAPIKey())},
+		{"HF Token", maskKey(a.cfg.GetHFToken())},
 	}
 
 	for i, f := range fields {
@@ -1077,20 +1217,19 @@ func (a *App) viewConfig() string {
 	}
 
 	b.WriteString("\n")
-	envKey := ""
 	if k := a.cfg.GetAPIKey(); k != "" && a.cfg.APIKey == "" {
-		envKey = successStyle.Render("  API key loaded from CIVITAI_API_KEY env var")
+		b.WriteString(successStyle.Render("  Civitai API key loaded from CIVITAI_API_KEY env var") + "\n")
 	}
-	if envKey != "" {
-		b.WriteString(envKey + "\n")
+	if k := a.cfg.GetHFToken(); k != "" && a.cfg.HFToken == "" {
+		b.WriteString(successStyle.Render("  HF token loaded from HF_TOKEN env var") + "\n")
 	}
 
 	b.WriteString("\n")
 	if a.firstRun {
 		if a.configEdit == 0 {
 			b.WriteString(helpStyle.Render("  enter: save path"))
-		} else if a.configEdit == 1 {
-			b.WriteString(helpStyle.Render("  enter: save key  esc: skip (optional)"))
+		} else if a.configEdit == 1 || a.configEdit == 2 {
+			b.WriteString(helpStyle.Render("  enter: save  esc: skip (optional)"))
 		} else {
 			b.WriteString(helpStyle.Render("  enter: edit"))
 		}
