@@ -132,7 +132,7 @@ func (a *App) hfSearchCmd() tea.Cmd {
 		Query:     a.hfSearchQuery,
 		Filter:    hfFilters[a.hfFilterIdx].value,
 		Sort:      hfSorts[a.hfSortIdx].value,
-		Direction: "desc",
+		Direction: "-1",
 		Limit:     20,
 	}
 	client := a.hfClient

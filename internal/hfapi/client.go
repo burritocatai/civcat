@@ -106,7 +106,7 @@ type SearchParams struct {
 	Query     string
 	Filter    string // pipeline tag filter, e.g. "text-to-image"
 	Sort      string // "downloads", "likes", "lastModified"
-	Direction string // "desc" or "asc"
+	Direction string // "-1" (descending) or "1" (ascending)
 	Limit     int
 }
 
