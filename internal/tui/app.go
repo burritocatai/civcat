@@ -489,7 +489,11 @@ func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				fileErr = os.Remove(m.FilePath)
 			}
 			// Remove from tracker regardless of file deletion result.
-			a.tracker.Remove(m.ModelID)
+			if m.Source == "huggingface" {
+				a.tracker.RemoveHF(m.ModelName, m.FileName)
+			} else {
+				a.tracker.Remove(m.ModelID)
+			}
 			a.installedModels = a.tracker.GetAll()
 			if a.installedCursor >= len(a.installedModels) && a.installedCursor > 0 {
 				a.installedCursor--
@@ -950,6 +954,10 @@ func (a *App) checkUpdatesCmd() tea.Cmd {
 	return func() tea.Msg {
 		var results []updateResult
 		for _, m := range models {
+			// Skip HuggingFace models — they have no Civitai version to check.
+			if m.Source == "huggingface" {
+				continue
+			}
 			model, err := client.GetModel(m.ModelID)
 			if err != nil {
 				return updateCheckMsg{err: fmt.Errorf("checking %s: %w", m.ModelName, err)}
