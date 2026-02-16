@@ -149,6 +149,7 @@ var searchTypes = []struct {
 	{"Poses", api.ModelTypePoses},
 	{"Wildcards", api.ModelTypeWildcards},
 	{"MotionModule", api.ModelTypeMotionModule},
+	{"Workflows", api.ModelTypeWorkflows},
 	{"Other", api.ModelTypeOther},
 }
 
