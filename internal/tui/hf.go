@@ -83,10 +83,17 @@ func (a *App) handleHFDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if a.hfDetailCursor > 0 {
 			a.hfDetailCursor--
+			if a.hfDetailCursor < a.hfDetailOffset {
+				a.hfDetailOffset = a.hfDetailCursor
+			}
 		}
 	case "down", "j":
 		if a.hfDetailCursor < len(a.hfDetailFiles)-1 {
 			a.hfDetailCursor++
+			maxVisible := a.hfFilePageSize()
+			if maxVisible > 0 && a.hfDetailCursor >= a.hfDetailOffset+maxVisible {
+				a.hfDetailOffset = a.hfDetailCursor - maxVisible + 1
+			}
 		}
 	case "t":
 		a.hfDetailTypeIdx = (a.hfDetailTypeIdx + 1) % len(hfModelTypes)
@@ -229,6 +236,21 @@ func (a *App) viewHFSearch() string {
 	return b.String()
 }
 
+// hfFilePageSize returns the number of file lines visible in the viewport.
+// It reserves space for the header, model info, and footer chrome.
+func (a *App) hfFilePageSize() int {
+	if a.height <= 0 {
+		return 0 // unknown height — show all
+	}
+	// Overhead: app title(2) + model info(~7) + "Files:" header(3) + help/status(5)
+	const overhead = 17
+	avail := a.height - overhead
+	if avail < 5 {
+		avail = 5
+	}
+	return avail
+}
+
 func (a *App) viewHFDetail() string {
 	var b strings.Builder
 
@@ -261,12 +283,41 @@ func (a *App) viewHFDetail() string {
 	typeLabel := hfModelTypes[a.hfDetailTypeIdx].label
 	b.WriteString("\n" + mutedStyle.Render(fmt.Sprintf("  Install as: %s (t/T to change)", typeLabel)) + "\n")
 
-	b.WriteString("\n" + subtitleStyle.Render("  Files:") + "\n\n")
+	total := len(a.hfDetailFiles)
+	filesLabel := "  Files:"
+	if total > 0 {
+		filesLabel = fmt.Sprintf("  Files: (%d total)", total)
+	}
+	b.WriteString("\n" + subtitleStyle.Render(filesLabel) + "\n\n")
 
-	if len(a.hfDetailFiles) == 0 {
+	if total == 0 {
 		b.WriteString(mutedStyle.Render("  No downloadable model files found.") + "\n")
 	} else {
-		for i, f := range a.hfDetailFiles {
+		maxVisible := a.hfFilePageSize()
+
+		// Clamp offset.
+		if a.hfDetailOffset > total-maxVisible {
+			a.hfDetailOffset = total - maxVisible
+		}
+		if a.hfDetailOffset < 0 {
+			a.hfDetailOffset = 0
+		}
+
+		start := a.hfDetailOffset
+		end := total
+		if maxVisible > 0 && maxVisible < total {
+			end = start + maxVisible
+			if end > total {
+				end = total
+			}
+		}
+
+		if start > 0 {
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("  ... %d more above ...", start)) + "\n")
+		}
+
+		for i := start; i < end; i++ {
+			f := a.hfDetailFiles[i]
 			prefix := "  "
 			style := normalItemStyle
 			if i == a.hfDetailCursor {
@@ -276,6 +327,11 @@ func (a *App) viewHFDetail() string {
 
 			line := fmt.Sprintf("%s%s", prefix, f.RFilename)
 			b.WriteString(style.Render(line) + "\n")
+		}
+
+		remaining := total - end
+		if remaining > 0 {
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("  ... %d more below ...", remaining)) + "\n")
 		}
 	}
 

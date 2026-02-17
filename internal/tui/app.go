@@ -78,6 +78,7 @@ type App struct {
 	hfDetailModel   *hfapi.HFModel
 	hfDetailFiles   []hfapi.Sibling // downloadable files only
 	hfDetailCursor  int
+	hfDetailOffset  int // scroll offset for file list viewport
 	hfDetailTypeIdx int // model type for ComfyUI directory mapping
 
 	// Download state
@@ -419,6 +420,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			a.hfDetailCursor = 0
+			a.hfDetailOffset = 0
 			a.hfDetailTypeIdx = 0
 			a.currentView = viewHFDetail
 			a.errMsg = ""
