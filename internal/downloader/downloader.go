@@ -40,6 +40,11 @@ var modelDirs = map[api.ModelType]string{
 	api.ModelTypeClassifiers:       "models/classifiers",
 	api.ModelTypeModelPatches:      "models/model_patches",
 	api.ModelTypeAudioEncoders:     "models/audio_encoders",
+	api.ModelTypeCLIP:              "models/clip",
+	api.ModelTypeSAMs:              "models/sams",
+	api.ModelTypeUNet:              "models/unet",
+	api.ModelTypeUltralyticsBbox:   "models/ultralytics/bbox",
+	api.ModelTypeUltralyticsSegm:   "models/ultralytics/segm",
 	api.ModelTypeOther:             "models/other",
 }
 

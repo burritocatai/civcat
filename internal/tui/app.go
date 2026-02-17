@@ -280,6 +280,11 @@ var hfModelTypes = []struct {
 	{"Classifiers", api.ModelTypeClassifiers},
 	{"Model Patches", api.ModelTypeModelPatches},
 	{"Audio Encoders", api.ModelTypeAudioEncoders},
+	{"CLIP", api.ModelTypeCLIP},
+	{"SAMs", api.ModelTypeSAMs},
+	{"UNet", api.ModelTypeUNet},
+	{"Ultralytics Bbox", api.ModelTypeUltralyticsBbox},
+	{"Ultralytics Segm", api.ModelTypeUltralyticsSegm},
 	{"Other", api.ModelTypeOther},
 }
 

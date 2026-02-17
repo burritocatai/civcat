@@ -30,6 +30,11 @@ const (
 	ModelTypeClassifiers       ModelType = "Classifiers"
 	ModelTypeModelPatches      ModelType = "ModelPatches"
 	ModelTypeAudioEncoders     ModelType = "AudioEncoders"
+	ModelTypeCLIP              ModelType = "CLIP"
+	ModelTypeSAMs              ModelType = "SAMs"
+	ModelTypeUNet              ModelType = "UNet"
+	ModelTypeUltralyticsBbox   ModelType = "UltralyticsBbox"
+	ModelTypeUltralyticsSegm   ModelType = "UltralyticsSegm"
 	ModelTypeOther             ModelType = "Other"
 )
 
