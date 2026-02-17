@@ -12,8 +12,14 @@ import (
 	"github.com/burritocatai/civcat/internal/hfapi"
 	"github.com/burritocatai/civcat/internal/tracker"
 	"github.com/burritocatai/civcat/internal/tui"
+	"github.com/burritocatai/civcat/internal/webui"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
+)
+
+var (
+	webEnabled bool
+	webPort    int
 )
 
 var rootCmd = &cobra.Command{
@@ -44,6 +50,9 @@ var importCmd = &cobra.Command{
 }
 
 func Execute() error {
+	rootCmd.PersistentFlags().BoolVar(&webEnabled, "web", false, "start the embedded web UI server")
+	rootCmd.PersistentFlags().IntVar(&webPort, "port", 8080, "port for the web UI server (implies --web)")
+
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(importCmd)
@@ -51,6 +60,11 @@ func Execute() error {
 }
 
 func runApp(cmd *cobra.Command, args []string) error {
+	// --port implies --web
+	if cmd.Flags().Changed("port") {
+		webEnabled = true
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -62,6 +76,19 @@ func runApp(cmd *cobra.Command, args []string) error {
 	trk, err := tracker.New()
 	if err != nil {
 		return fmt.Errorf("initializing tracker: %w", err)
+	}
+
+	if webEnabled {
+		srv, err := webui.NewServer(cfg, client, hfClient, trk, webPort)
+		if err != nil {
+			return fmt.Errorf("creating web server: %w", err)
+		}
+		go func() {
+			if err := srv.ListenAndServe(); err != nil {
+				// The server stops when the TUI exits; this is expected.
+			}
+		}()
+		fmt.Fprintf(os.Stderr, "Web UI running at http://localhost:%d\n", webPort)
 	}
 
 	app := tui.NewApp(cfg, client, hfClient, trk)

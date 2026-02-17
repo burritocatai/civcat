@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>civcat</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #0f0f13;
+    --surface:   #1a1a24;
+    --border:    #2d2d40;
+    --accent:    #7c3aed;
+    --accent2:   #9d5cf7;
+    --success:   #10b981;
+    --warning:   #f59e0b;
+    --error:     #ef4444;
+    --muted:     #6b7280;
+    --text:      #e5e7eb;
+    --text2:     #9ca3af;
+    --radius:    8px;
+  }
+
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────────── */
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--accent2);
+    letter-spacing: -0.02em;
+    flex-shrink: 0;
+  }
+  header h1 span { color: var(--text2); font-weight: 400; }
+
+  .add-form {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+    min-width: 280px;
+  }
+  .add-form input {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 0.875rem;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .add-form input:focus { border-color: var(--accent); }
+  .add-form input::placeholder { color: var(--muted); }
+  .add-form button {
+    padding: 8px 16px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.15s;
+  }
+  .add-form button:hover { background: var(--accent2); }
+  .add-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+    flex-shrink: 0;
+    transition: background 0.3s;
+  }
+  .status-dot.live { background: var(--success); }
+
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 0;
+    overflow: hidden;
+  }
+  @media (max-width: 720px) {
+    main { grid-template-columns: 1fr; }
+  }
+
+  section {
+    overflow-y: auto;
+    padding: 20px;
+  }
+  section + section {
+    border-left: 1px solid var(--border);
+  }
+
+  section h2 {
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 16px;
+  }
+
+  /* ── Models grid ─────────────────────────────────────────────────────── */
+  .model-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 14px;
+  }
+
+  .model-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: border-color 0.15s;
+  }
+  .model-card:hover { border-color: var(--accent); }
+
+  .model-card .thumb {
+    width: 100%;
+    aspect-ratio: 2/3;
+    background: var(--border);
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .model-card .thumb img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .model-card .thumb .no-img {
+    width: 100%; height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2rem;
+    color: var(--border);
+  }
+
+  .model-card .info {
+    padding: 10px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+  }
+  .model-card .name {
+    font-size: 0.825rem;
+    font-weight: 600;
+    line-height: 1.3;
+    word-break: break-word;
+  }
+  .model-card .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  /* ── Badges ─────────────────────────────────────────────────────────── */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 7px;
+    border-radius: 100px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    background: var(--border);
+    color: var(--text2);
+    line-height: 1.5;
+  }
+  .badge.type { background: #1e1b4b; color: #a5b4fc; }
+  .badge.civitai { background: #1f1429; color: var(--accent2); }
+  .badge.huggingface { background: #1a2035; color: #60a5fa; }
+  .badge.status-pending { background: #27272a; color: var(--muted); }
+  .badge.status-downloading { background: #1e3a5f; color: #60a5fa; }
+  .badge.status-complete { background: #052e16; color: var(--success); }
+  .badge.status-failed { background: #2d1515; color: var(--error); }
+  .badge.status-cancelled { background: #27272a; color: var(--muted); }
+
+  .size { font-size: 0.7rem; color: var(--muted); }
+
+  /* ── Empty state ─────────────────────────────────────────────────────── */
+  .empty {
+    color: var(--muted);
+    font-size: 0.875rem;
+    text-align: center;
+    padding: 40px 0;
+  }
+
+  /* ── Queue panel ─────────────────────────────────────────────────────── */
+  .queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .queue-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .queue-item.status-failed { border-color: #3d1515; }
+  .queue-item.status-complete { border-color: #0a2e1a; }
+
+  .queue-item .row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .queue-item .q-name {
+    font-size: 0.8rem;
+    font-weight: 600;
+    flex: 1;
+    word-break: break-word;
+    line-height: 1.35;
+  }
+  .queue-item .q-url {
+    font-size: 0.7rem;
+    color: var(--muted);
+    word-break: break-all;
+    line-height: 1.3;
+  }
+  .queue-item .q-error {
+    font-size: 0.7rem;
+    color: var(--error);
+    line-height: 1.3;
+  }
+
+  /* Progress bar */
+  .progress-wrap {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+  .progress-bar.complete { background: var(--success); }
+
+  .progress-label {
+    font-size: 0.7rem;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* Delete button */
+  .btn-delete {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    line-height: 1;
+    flex-shrink: 0;
+    transition: color 0.15s;
+  }
+  .btn-delete:hover { color: var(--error); }
+
+  /* ── Toast ───────────────────────────────────────────────────────────── */
+  #toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(60px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 18px;
+    font-size: 0.85rem;
+    transition: transform 0.25s ease;
+    pointer-events: none;
+    z-index: 100;
+    max-width: 400px;
+    text-align: center;
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast.error { border-color: var(--error); color: var(--error); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>civcat <span>web</span></h1>
+  <form class="add-form" id="add-form">
+    <input id="url-input" type="url" placeholder="CivitAI or HuggingFace URL…" autocomplete="off" spellcheck="false">
+    <button type="submit" id="add-btn">Add to Queue</button>
+  </form>
+  <div class="status-dot" id="sse-dot" title="Live updates disconnected"></div>
+</header>
+
+<main>
+  <section id="models-section">
+    <h2>Installed Models (<span id="model-count">0</span>)</h2>
+    <div class="model-grid" id="model-grid">
+      <p class="empty">No installed models found.</p>
+    </div>
+  </section>
+
+  <section id="queue-section">
+    <h2>Download Queue (<span id="queue-count">0</span>)</h2>
+    <div class="queue-list" id="queue-list">
+      <p class="empty">Queue is empty.</p>
+    </div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Helpers ───────────────────────────────────────────────────────────
+  function el(id) { return document.getElementById(id); }
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  let toastTimer;
+  function showToast(msg, isError) {
+    const t = el('toast');
+    t.textContent = msg;
+    t.className = isError ? 'error show' : 'show';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.className = isError ? 'error' : ''; }, 3000);
+  }
+
+  function fmtBytes(bytes) {
+    if (!bytes || bytes <= 0) return '';
+    const units = ['B','KB','MB','GB'];
+    let i = 0;
+    let v = bytes;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return v.toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  function fmtSize(sizeKB) {
+    if (!sizeKB) return '';
+    if (sizeKB >= 1024 * 1024) return (sizeKB / (1024 * 1024)).toFixed(2) + ' GB';
+    if (sizeKB >= 1024) return (sizeKB / 1024).toFixed(1) + ' MB';
+    return sizeKB.toFixed(0) + ' KB';
+  }
+
+  function sourceClass(src) {
+    if (src === 'civitai') return 'badge civitai';
+    if (src === 'huggingface') return 'badge huggingface';
+    return 'badge';
+  }
+
+  // ── Render models ─────────────────────────────────────────────────────
+  function renderModels(models) {
+    const grid = el('model-grid');
+    el('model-count').textContent = models.length;
+
+    if (!models.length) {
+      grid.innerHTML = '<p class="empty">No installed models found.</p>';
+      return;
+    }
+
+    grid.innerHTML = models.map(m => {
+      const thumb = m.preview_url
+        ? `<img src="${esc(m.preview_url)}" alt="" loading="lazy" onerror="this.parentElement.innerHTML='<div class=no-img>⬛</div>'">`
+        : `<div class="no-img">⬛</div>`;
+
+      const src = m.source || 'civitai';
+      const srcLabel = src === 'huggingface' ? 'HuggingFace' : 'CivitAI';
+      const size = fmtSize(m.size_kb);
+
+      return `<article class="model-card">
+        <div class="thumb">${thumb}</div>
+        <div class="info">
+          <div class="name">${esc(m.model_name || m.file_name)}</div>
+          <div class="meta">
+            ${m.type ? `<span class="badge type">${esc(m.type)}</span>` : ''}
+            <span class="${sourceClass(src)}">${esc(srcLabel)}</span>
+            ${m.base_model ? `<span class="badge">${esc(m.base_model)}</span>` : ''}
+          </div>
+          ${size ? `<span class="size">${esc(size)}</span>` : ''}
+        </div>
+      </article>`;
+    }).join('');
+  }
+
+  // ── Render queue ──────────────────────────────────────────────────────
+  function renderQueue(items) {
+    const list = el('queue-list');
+    el('queue-count').textContent = items.length;
+
+    if (!items.length) {
+      list.innerHTML = '<p class="empty">Queue is empty.</p>';
+      return;
+    }
+
+    list.innerHTML = items.map(item => {
+      const name = item.model_name || item.url;
+      const src = item.source || 'civitai';
+      const srcLabel = src === 'huggingface' ? 'HuggingFace' : 'CivitAI';
+      const pct = Math.min(100, item.progress || 0);
+      const isDownloading = item.status === 'downloading';
+      const isDone = item.status === 'complete';
+      const isFailed = item.status === 'failed';
+
+      const progressHTML = (isDownloading || isDone) ? `
+        <div class="progress-wrap">
+          <div class="progress-bar${isDone ? ' complete' : ''}" style="width:${pct}%"></div>
+        </div>
+        <div class="progress-label">
+          <span>${isDownloading ? fmtBytes(item.bytes_done) + ' / ' + fmtBytes(item.bytes_total) : 'Complete'}</span>
+          <span>${pct.toFixed(1)}%</span>
+        </div>` : '';
+
+      const errorHTML = isFailed && item.error
+        ? `<div class="q-error">⚠ ${esc(item.error)}</div>`
+        : '';
+
+      return `<div class="queue-item status-${esc(item.status)}">
+        <div class="row">
+          <div style="flex:1">
+            <div class="q-name">${esc(name)}</div>
+            <div class="q-url">${esc(item.url)}</div>
+          </div>
+          <button class="btn-delete" data-id="${esc(item.id)}" title="Remove">✕</button>
+        </div>
+        <div class="row" style="gap:6px">
+          <span class="${sourceClass(src)}">${esc(srcLabel)}</span>
+          <span class="badge status-${esc(item.status)}">${esc(item.status)}</span>
+          ${item.model_type ? `<span class="badge type">${esc(item.model_type)}</span>` : ''}
+        </div>
+        ${progressHTML}
+        ${errorHTML}
+      </div>`;
+    }).join('');
+
+    // Bind delete buttons.
+    list.querySelectorAll('.btn-delete').forEach(btn => {
+      btn.addEventListener('click', () => removeQueueItem(btn.dataset.id));
+    });
+  }
+
+  // ── API calls ─────────────────────────────────────────────────────────
+  async function fetchModels() {
+    try {
+      const res = await fetch('/api/models');
+      if (!res.ok) throw new Error('Failed to load models');
+      renderModels(await res.json());
+    } catch (e) {
+      showToast('Could not load models: ' + e.message, true);
+    }
+  }
+
+  async function fetchQueue() {
+    try {
+      const res = await fetch('/api/queue');
+      if (!res.ok) throw new Error('Failed to load queue');
+      renderQueue(await res.json());
+    } catch (e) {
+      showToast('Could not load queue: ' + e.message, true);
+    }
+  }
+
+  async function addToQueue(url) {
+    const btn = el('add-btn');
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    try {
+      const res = await fetch('/api/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || 'Unknown error');
+      }
+      el('url-input').value = '';
+      showToast('Added to queue!');
+      fetchQueue();
+    } catch (e) {
+      showToast('Error: ' + e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Add to Queue';
+    }
+  }
+
+  async function removeQueueItem(id) {
+    try {
+      const res = await fetch('/api/queue/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) throw new Error('Failed to remove item');
+      fetchQueue();
+    } catch (e) {
+      showToast('Error: ' + e.message, true);
+    }
+  }
+
+  // ── SSE ───────────────────────────────────────────────────────────────
+  let evtSource;
+  const dot = el('sse-dot');
+
+  function connectSSE() {
+    if (evtSource) evtSource.close();
+    evtSource = new EventSource('/api/events');
+
+    evtSource.addEventListener('connected', () => {
+      dot.classList.add('live');
+      dot.title = 'Live updates connected';
+    });
+
+    evtSource.addEventListener('models', e => {
+      try { renderModels(JSON.parse(e.data)); } catch (_) {}
+    });
+
+    evtSource.addEventListener('queue', e => {
+      try { renderQueue(JSON.parse(e.data)); } catch (_) {}
+    });
+
+    evtSource.onerror = () => {
+      dot.classList.remove('live');
+      dot.title = 'Live updates disconnected — reconnecting…';
+      setTimeout(connectSSE, 3000);
+    };
+  }
+
+  // ── Form ──────────────────────────────────────────────────────────────
+  el('add-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const url = el('url-input').value.trim();
+    if (url) addToQueue(url);
+  });
+
+  // ── Init ──────────────────────────────────────────────────────────────
+  fetchModels();
+  fetchQueue();
+  connectSSE();
+})();
+</script>
+</body>
+</html>
