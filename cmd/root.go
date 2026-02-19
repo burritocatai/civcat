@@ -206,7 +206,7 @@ func runImport(cmd *cobra.Command, args []string) error {
 			}
 		}()
 
-		installed, err := downloader.Download(client, model, version, cfg.ComfyUIPath, progressCh)
+		installed, err := downloader.Download(client, model, version, cfg.ComfyUIPath, progressCh, nil)
 		close(progressCh)
 		fmt.Println() // newline after progress
 
