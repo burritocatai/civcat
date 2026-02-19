@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,12 +68,15 @@ type Progress struct {
 
 // Download downloads a model version and installs it to the proper ComfyUI directory.
 // It returns the installed model info. Progress updates are sent on the progressCh if non-nil.
+// If selectedFile is non-nil, that specific file variant is downloaded; otherwise the
+// primary (or first) file is used.
 func Download(
 	client *api.Client,
 	model *api.Model,
 	version *api.ModelVersion,
 	comfyUIPath string,
 	progressCh chan<- Progress,
+	selectedFile *api.ModelFile,
 ) (*tracker.InstalledModel, error) {
 	// Determine target directory.
 	subdir := SubdirForType(model.Type)
@@ -82,20 +86,30 @@ func Download(
 		return nil, fmt.Errorf("creating target directory: %w", err)
 	}
 
-	// Find the primary file to get expected filename and hash.
+	// Use the explicitly selected file, or find the primary file.
 	var primaryFile *api.ModelFile
-	for i := range version.Files {
-		if version.Files[i].Primary {
-			primaryFile = &version.Files[i]
-			break
+	if selectedFile != nil {
+		primaryFile = selectedFile
+	} else {
+		for i := range version.Files {
+			if version.Files[i].Primary {
+				primaryFile = &version.Files[i]
+				break
+			}
+		}
+		if primaryFile == nil && len(version.Files) > 0 {
+			primaryFile = &version.Files[0]
 		}
 	}
-	if primaryFile == nil && len(version.Files) > 0 {
-		primaryFile = &version.Files[0]
-	}
 
-	// Start download.
-	resp, err := client.DownloadFile(version.ID)
+	// Start download. Use the file-specific URL when available.
+	var resp *http.Response
+	var err error
+	if primaryFile != nil && primaryFile.DownloadURL != "" {
+		resp, err = client.DownloadFileByURL(primaryFile.DownloadURL)
+	} else {
+		resp, err = client.DownloadFile(version.ID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("downloading model: %w", err)
 	}

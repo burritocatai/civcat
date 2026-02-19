@@ -245,3 +245,45 @@ func (c *Client) DownloadFile(versionID int) (*http.Response, error) {
 
 	return resp, nil
 }
+
+// DownloadFileByURL downloads a file using an explicit URL (e.g. a file-specific
+// download URL with type/format/size/fp query parameters).
+func (c *Client) DownloadFileByURL(dlURL string) (*http.Response, error) {
+	c.waitForToken()
+
+	req, err := http.NewRequest("GET", dlURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating download request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "civcat/1.0")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	client := &http.Client{
+		Timeout: 0,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+				req.Header.Del("Authorization")
+			}
+			return nil
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("downloading: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return nil, fmt.Errorf("download error %d: %s", resp.StatusCode, string(body))
+	}
+
+	return resp, nil
+}

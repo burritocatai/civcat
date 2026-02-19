@@ -25,6 +25,7 @@ const (
 	viewUpdates
 	viewHFSearch
 	viewHFDetail
+	viewFileSelect
 )
 
 type App struct {
@@ -59,6 +60,11 @@ type App struct {
 	detailModel   *api.Model
 	detailCursor  int
 	prevView      view
+
+	// File selection view (for Civitai versions with multiple files)
+	fileSelectVersion *api.ModelVersion
+	fileSelectFiles   []api.ModelFile
+	fileSelectCursor  int
 
 	// Updates view
 	checkingUpdates bool
@@ -481,6 +487,8 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.handleHFSearchKeys(msg)
 	case viewHFDetail:
 		return a.handleHFDetailKeys(msg)
+	case viewFileSelect:
+		return a.handleFileSelectKeys(msg)
 	}
 	return a, nil
 }
@@ -676,6 +684,14 @@ func (a *App) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.errMsg = fmt.Sprintf("This version is in early access (%d days remaining) — download unavailable", days)
 				return a, nil
 			}
+			// If version has multiple files, show file selection view.
+			if len(version.Files) > 1 {
+				a.fileSelectVersion = &version
+				a.fileSelectFiles = version.Files
+				a.fileSelectCursor = 0
+				a.currentView = viewFileSelect
+				return a, nil
+			}
 			a.downloading = true
 			a.downloadName = a.detailModel.Name
 			a.downloadPct = 0
@@ -689,7 +705,46 @@ func (a *App) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					a.downloadProgress.Width = 80
 				}
 			}
-			return a, a.downloadCmd(a.detailModel, &version)
+			return a, a.downloadCmd(a.detailModel, &version, nil)
+		}
+	}
+	return a, nil
+}
+
+func (a *App) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.fileSelectVersion == nil {
+		return a, nil
+	}
+	switch msg.String() {
+	case "esc":
+		a.currentView = viewModelDetail
+		a.fileSelectVersion = nil
+		a.fileSelectFiles = nil
+	case "up", "k":
+		if a.fileSelectCursor > 0 {
+			a.fileSelectCursor--
+		}
+	case "down", "j":
+		if a.fileSelectCursor < len(a.fileSelectFiles)-1 {
+			a.fileSelectCursor++
+		}
+	case "enter", "i":
+		if !a.downloading && len(a.fileSelectFiles) > 0 {
+			file := a.fileSelectFiles[a.fileSelectCursor]
+			version := a.fileSelectVersion
+			a.downloading = true
+			a.downloadName = a.detailModel.Name
+			a.downloadPct = 0
+			a.downloadBytes = 0
+			a.downloadTotal = 0
+			a.downloadProgress = progress.New(progress.WithDefaultGradient())
+			if a.width > 0 {
+				a.downloadProgress.Width = a.width - 6
+				if a.downloadProgress.Width > 80 {
+					a.downloadProgress.Width = 80
+				}
+			}
+			return a, a.downloadCmd(a.detailModel, version, &file)
 		}
 	}
 	return a, nil
@@ -910,18 +965,23 @@ func (a *App) fetchModelDetail(modelID int) tea.Cmd {
 // downloadCmd starts a background download and returns a cmd to listen for
 // the first progress update. The download goroutine sends progress on a
 // channel; waitForProgress reads from it and returns tea messages.
-func (a *App) downloadCmd(model *api.Model, version *api.ModelVersion) tea.Cmd {
+func (a *App) downloadCmd(model *api.Model, version *api.ModelVersion, selectedFile *api.ModelFile) tea.Cmd {
 	client := a.client
 	comfyPath := a.cfg.ComfyUIPath
 	m := *model
 	v := *version
+	var sf *api.ModelFile
+	if selectedFile != nil {
+		copy := *selectedFile
+		sf = &copy
+	}
 
 	ch := make(chan downloader.Progress, 64)
 	a.downloadCh = ch
 
 	// Run download in a background goroutine.
 	go func() {
-		_, err := downloader.Download(client, &m, &v, comfyPath, ch)
+		_, err := downloader.Download(client, &m, &v, comfyPath, ch, sf)
 		if err != nil {
 			// Send error as a final message on the channel.
 			ch <- downloader.Progress{Done: true, Err: err}
@@ -1009,6 +1069,8 @@ func (a *App) View() string {
 		b.WriteString(a.viewHFSearch())
 	case viewHFDetail:
 		b.WriteString(a.viewHFDetail())
+	case viewFileSelect:
+		b.WriteString(a.viewFileSelect())
 	}
 
 	// Status bar
@@ -1174,7 +1236,9 @@ func (a *App) viewDetail() string {
 		}
 
 		fileInfo := ""
-		if len(v.Files) > 0 {
+		if len(v.Files) > 1 {
+			fileInfo = fmt.Sprintf("%d files", len(v.Files))
+		} else if len(v.Files) == 1 {
 			f := v.Files[0]
 			fileInfo = fmt.Sprintf("%.1f MB, %s", f.SizeKB/1024, f.Metadata.Format)
 		}
@@ -1201,6 +1265,52 @@ func (a *App) viewDetail() string {
 
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("  enter/i: install version  esc: back"))
+
+	return b.String()
+}
+
+func (a *App) viewFileSelect() string {
+	var b strings.Builder
+
+	if a.detailModel == nil || a.fileSelectVersion == nil {
+		b.WriteString(mutedStyle.Render("  Loading...") + "\n")
+		return b.String()
+	}
+
+	m := a.detailModel
+	v := a.fileSelectVersion
+	b.WriteString(subtitleStyle.Render(m.Name) + "\n")
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Version: %s | Base: %s", v.Name, v.BaseModel)) + "\n")
+	b.WriteString("\n" + subtitleStyle.Render(fmt.Sprintf("  Select file: (%d available)", len(a.fileSelectFiles))) + "\n\n")
+
+	for i, f := range a.fileSelectFiles {
+		prefix := "  "
+		style := normalItemStyle
+		if i == a.fileSelectCursor {
+			prefix = "> "
+			style = selectedStyle
+		}
+
+		sizeMB := f.SizeKB / 1024
+		sizeStr := fmt.Sprintf("%.1f MB", sizeMB)
+		if sizeMB >= 1024 {
+			sizeStr = fmt.Sprintf("%.1f GB", sizeMB/1024)
+		}
+
+		desc := f.Metadata.Format
+		if f.Metadata.Size != "" {
+			desc += ", " + f.Metadata.Size
+		}
+		if f.Metadata.FP != "" {
+			desc += ", " + f.Metadata.FP
+		}
+
+		line := fmt.Sprintf("%s%-45s %s (%s)", prefix, truncate(f.Name, 43), sizeStr, desc)
+		b.WriteString(style.Render(line) + "\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("  enter/i: download file  esc: back"))
 
 	return b.String()
 }
