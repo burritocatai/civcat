@@ -134,8 +134,10 @@ jobs:
 
       - name: Run gosec
         run: |
+          set +e
           gosec -fmt text -stdout ./...
           GOSEC_EXIT=$?
+          set -e
           if [[ $GOSEC_EXIT -eq 2 ]]; then
             echo "::error::gosec tool error (exit 2)"
             exit 2
