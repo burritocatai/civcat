@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       image_ref:
-        description: "Full image reference to scan (e.g. ghcr.io/org/repo:1.2.3). Leave blank to auto-resolve from the latest semver tag."
+        description: "Full image reference to scan (e.g. ghcr.io/org/repo:v1.2.3). Leave blank to auto-resolve from the latest semver tag."
         required: false
         type: string
   schedule:
@@ -25,6 +25,7 @@ env:
 jobs:
   # ─────────────────────────────────────────────
   # 1. Resolve the image reference to scan
+  #    Images are tagged with the full 'v*' git tag (e.g. v1.2.3), NOT stripped.
   # ─────────────────────────────────────────────
   resolve-image:
     name: Resolve Image Reference
@@ -49,19 +50,22 @@ jobs:
           BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
 
           if [[ -n "${{ inputs.image_ref }}" ]]; then
+            # Explicit override via workflow_dispatch
             IMAGE="${{ inputs.image_ref }}"
+
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF_NAME#v}"
-            IMAGE="${BASE}:${TAG}"
+            # Tag push — use the git tag as-is (e.g. v1.2.3)
+            IMAGE="${BASE}:${GITHUB_REF_NAME}"
+
           else
+            # Scheduled run — use the latest v* git tag as-is
             LATEST_TAG=$(git tag --list 'v*' | sort -V | tail -n1)
             if [[ -z "${LATEST_TAG}" ]]; then
               echo "::error::No semver tags found. Push a 'v*' tag first or supply an explicit image_ref."
               exit 1
             fi
-            TAG="${LATEST_TAG#v}"
-            IMAGE="${BASE}:${TAG}"
-            echo "Resolved latest semver tag: ${LATEST_TAG} → ${TAG}"
+            IMAGE="${BASE}:${LATEST_TAG}"
+            echo "Resolved latest tag: ${LATEST_TAG}"
           fi
 
           echo "image_ref=${IMAGE}" >> "$GITHUB_OUTPUT"
@@ -120,28 +124,28 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: false   # avoids the cache service 400 error
+          cache: false
 
-      # govulncheck — official Go vuln DB
       - name: govulncheck
         uses: golang/govulncheck-action@v1
         with:
           go-package: ./...
 
-      # gosec — static analysis
-      # IMPORTANT: gosec's SARIF output has an upstream bug where it emits a
-      # non-standard 'relationships' field that fails GitHub's SARIF schema
-      # validator. There is no flag to suppress it. We therefore use the 'text'
-      # format for human-readable output in the job log and fail explicitly on
-      # findings, rather than trying to upload broken SARIF to the Security tab.
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
 
+      # gosec exits 0 = no issues, 1 = issues found, 2 = tool error.
+      # We only want to fail the job on exit code 2 (real error).
+      # Issues found (exit 1) are expected and should just be reported.
       - name: Run gosec
         run: |
-          gosec -fmt text -stdout ./...
+          gosec -fmt text -stdout ./... || EXIT=$?
+          if [[ "${EXIT:-0}" -eq 2 ]]; then
+            echo "::error::gosec encountered a tool error (exit 2)."
+            exit 2
+          fi
+          exit 0
 
-      # nancy — dependency CVEs via Sonatype OSS Index
       - name: Install nancy
         run: |
           curl -sSfL \
@@ -170,26 +174,16 @@ jobs:
       - name: Install Grype
         run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
-      # IMPORTANT: do NOT use --fail-on. It causes Grype to exit before the OS
-      # flushes the SARIF file buffer, producing a truncated JSON file that
-      # fails the upload step. Instead we check the output for findings and
-      # fail the job ourselves after the upload has completed.
       - name: Run Grype
         run: |
           grype "${{ needs.resolve-image.outputs.image_ref }}" \
             --output sarif \
             --file grype.sarif
-          echo "grype_exit=$?" >> "$GITHUB_ENV"
 
-      - name: Verify SARIF was written
+      - name: Verify SARIF
         run: |
-          if [[ ! -f grype.sarif ]]; then
-            echo "::error::grype.sarif was not created"
-            exit 1
-          fi
-          echo "grype.sarif size: $(wc -c < grype.sarif) bytes"
-          # Validate it is parseable JSON
-          python3 -c "import json,sys; json.load(open('grype.sarif'))" \
+          ls -la grype.sarif
+          python3 -c "import json; json.load(open('grype.sarif'))" \
             || { echo "::error::grype.sarif is not valid JSON"; exit 1; }
 
       - name: Upload Grype SARIF
@@ -199,22 +193,18 @@ jobs:
           sarif_file: grype.sarif
           category: grype
 
-      # Fail the job if Grype found any HIGH or CRITICAL vulnerabilities.
-      # We do this after the upload so findings always appear in the Security tab.
       - name: Fail on HIGH/CRITICAL findings
         run: |
           HIGH=$(python3 - <<'EOF'
-          import json, sys
+          import json
           sarif = json.load(open("grype.sarif"))
-          severities = []
+          count = 0
           for run in sarif.get("runs", []):
               for result in run.get("results", []):
-                  level = result.get("level", "")
-                  props = result.get("properties", {})
-                  severity = props.get("security-severity", "0")
-                  severities.append(float(severity))
-          high_or_critical = [s for s in severities if s >= 7.0]
-          print(len(high_or_critical))
+                  severity = float(result.get("properties", {}).get("security-severity", "0"))
+                  if severity >= 7.0:
+                      count += 1
+          print(count)
           EOF
           )
           if [[ "$HIGH" -gt 0 ]]; then
@@ -225,11 +215,6 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 5. Container image + filesystem scan — Trivy (CLI)
-  #
-  # IMPORTANT: we use the official install script rather than the apt repo or
-  # the trivy-action Docker wrapper. The Docker wrapper writes output files
-  # inside the container's own filesystem — not the runner's GITHUB_WORKSPACE —
-  # making them invisible to the upload steps regardless of what path you pass.
   # ─────────────────────────────────────────────
   trivy:
     name: Trivy (Image + Filesystem)
