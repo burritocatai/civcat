@@ -1,0 +1,281 @@
+name: Security Scanning
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_ref:
+        description: "Full image reference to scan (e.g. ghcr.io/org/repo:1.2.3). Leave blank to auto-resolve from the latest semver tag."
+        required: false
+        type: string
+  schedule:
+    - cron: "0 3 * * 1" # Every Monday at 03:00 UTC — scans the latest semver tag
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  packages: read
+  security-events: write # required to upload SARIF to the GitHub Security tab
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ─────────────────────────────────────────────
+  # 1. Resolve the image reference to scan
+  #
+  #   Push of tag v1.2.3    → ghcr.io/<org>/<repo>:1.2.3  (strips leading 'v')
+  #   Schedule              → ghcr.io/<org>/<repo>:<latest semver tag, 'v' stripped>
+  #   Manual dispatch       → explicit input, or latest semver tag as fallback
+  # ─────────────────────────────────────────────
+  resolve-image:
+    name: Resolve Image Reference
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.resolve.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # needed to enumerate all tags for schedule/dispatch
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image reference
+        id: resolve
+        run: |
+          BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
+
+          if [[ -n "${{ inputs.image_ref }}" ]]; then
+            # Explicit override via workflow_dispatch
+            IMAGE="${{ inputs.image_ref }}"
+
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            # Tag push — strip leading 'v' to match docker/metadata-action output
+            # e.g. refs/tags/v1.2.3 → 1.2.3
+            TAG="${GITHUB_REF_NAME#v}"
+            IMAGE="${BASE}:${TAG}"
+
+          else
+            # Scheduled run or untagged dispatch — resolve the latest semver tag
+            LATEST_TAG=$(git tag --list 'v*' \
+              | sort -V \
+              | tail -n1)
+
+            if [[ -z "${LATEST_TAG}" ]]; then
+              echo "::error::No semver tags found in this repository. Push a 'v*' tag first or supply an explicit image_ref."
+              exit 1
+            fi
+
+            TAG="${LATEST_TAG#v}"
+            IMAGE="${BASE}:${TAG}"
+            echo "Resolved latest semver tag: ${LATEST_TAG} → ${TAG}"
+          fi
+
+          echo "image_ref=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Will scan: ${IMAGE}"
+
+      # For tag-triggered runs the build workflow may still be completing.
+      # Poll for up to 10 minutes before giving up.
+      - name: Wait for image to be available
+        if: github.event_name == 'push'
+        run: |
+          IMAGE="${{ steps.resolve.outputs.image_ref }}"
+          echo "Waiting for ${IMAGE} to appear in registry…"
+          for i in $(seq 1 20); do
+            if docker manifest inspect "${IMAGE}" > /dev/null 2>&1; then
+              echo "Image available after attempt ${i}."
+              exit 0
+            fi
+            echo "Attempt ${i}/20 — not yet available, retrying in 30 s…"
+            sleep 30
+          done
+          echo "::error::Image ${IMAGE} was not available after 10 minutes."
+          exit 1
+
+  # ─────────────────────────────────────────────
+  # 2. Dockerfile linting — Hadolint
+  # ─────────────────────────────────────────────
+  hadolint:
+    name: Hadolint (Dockerfile Lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: Dockerfile        # adjust path if needed
+          format: sarif
+          output-file: hadolint.sarif
+          no-fail: true                 # surface findings via SARIF, not exit code
+
+      - name: Upload Hadolint SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: hadolint.sarif
+          category: hadolint
+
+  # ─────────────────────────────────────────────
+  # 3. Go source security
+  #    • govulncheck  — official Go vuln DB
+  #    • gosec        — static analysis (SARIF)
+  #    • nancy        — dep CVEs via Sonatype OSS Index
+  # ─────────────────────────────────────────────
+  go-security:
+    name: Go Security Scanners
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-file: go.mod
+          go-package: ./...
+
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+
+      - name: Run gosec
+        run: gosec -fmt sarif -out gosec.sarif -stdout -verbose=text ./... || true
+
+      - name: Upload gosec SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gosec.sarif
+          category: gosec
+
+      - name: Install nancy
+        run: |
+          curl -sSfL \
+            https://github.com/sonatype-nexus-community/nancy/releases/latest/download/nancy-linux.amd64-musl \
+            -o /usr/local/bin/nancy
+          chmod +x /usr/local/bin/nancy
+
+      - name: Run nancy
+        run: go list -json -deps ./... | nancy sleuth
+
+  # ─────────────────────────────────────────────
+  # 4. Container image scan — Grype
+  # ─────────────────────────────────────────────
+  grype:
+    name: Grype (Container Image)
+    runs-on: ubuntu-latest
+    needs: resolve-image
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Grype
+        uses: anchore/scan-action@v3
+        id: grype
+        with:
+          image: ${{ needs.resolve-image.outputs.image_ref }}
+          output-format: sarif
+          severity-cutoff: high
+          only-fixed: false
+
+      - name: Upload Grype SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype
+
+  # ─────────────────────────────────────────────
+  # 5. Container image scan — Trivy
+  #    Pass 1: image CVEs
+  #    Pass 2: filesystem misconfigs + secrets
+  # ─────────────────────────────────────────────
+  trivy:
+    name: Trivy (Image + Filesystem)
+    runs-on: ubuntu-latest
+    needs: resolve-image
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy — image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ needs.resolve-image.outputs.image_ref }}
+          scan-type: image
+          format: sarif
+          output: trivy-image.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "0"
+
+      - name: Upload Trivy image SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Trivy — filesystem scan (misconfigs + secrets)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: "."
+          format: sarif
+          output: trivy-fs.sarif
+          scanners: misconfig,secret,vuln
+          exit-code: "0"
+
+      - name: Upload Trivy filesystem SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+  # ─────────────────────────────────────────────
+  # 6. Aggregate gate
+  # ─────────────────────────────────────────────
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    needs: [hadolint, go-security, grype, trivy]
+    if: always()
+    steps:
+      - name: Check job results
+        run: |
+          FAILED=()
+          [[ "${{ needs.hadolint.result }}"    == "failure" ]] && FAILED+=("hadolint")
+          [[ "${{ needs.go-security.result }}" == "failure" ]] && FAILED+=("go-security")
+          [[ "${{ needs.grype.result }}"       == "failure" ]] && FAILED+=("grype")
+          [[ "${{ needs.trivy.result }}"       == "failure" ]] && FAILED+=("trivy")
+
+          if [[ ${#FAILED[@]} -gt 0 ]]; then
+            echo "::error::Security jobs failed: ${FAILED[*]}"
+            echo "Review findings in the Security tab → Code scanning alerts."
+            exit 1
+          fi
+
+          echo "All security scans passed ✓"
