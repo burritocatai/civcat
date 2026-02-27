@@ -160,7 +160,10 @@ jobs:
           nancy --version
 
       - name: Run nancy
-        run: go list -json -deps ./... | nancy sleuth
+        env:
+          OSSI_USERNAME: ${{ secrets.OSSINDEX_USERNAME }}
+          OSSI_TOKEN: ${{ secrets.OSSINDEX_TOKEN }}
+        run: go list -json -deps ./... | nancy sleuth --username "$OSSI_USERNAME" --token "$OSSI_TOKEN"
 
   # ─────────────────────────────────────────────
   # 4. Container image scan — Grype (CLI)
