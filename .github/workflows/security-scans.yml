@@ -25,7 +25,6 @@ env:
 jobs:
   # ─────────────────────────────────────────────
   # 1. Resolve the image reference to scan
-  #    Images are tagged with the full 'v*' git tag (e.g. v1.2.3), NOT stripped.
   # ─────────────────────────────────────────────
   resolve-image:
     name: Resolve Image Reference
@@ -50,15 +49,10 @@ jobs:
           BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
 
           if [[ -n "${{ inputs.image_ref }}" ]]; then
-            # Explicit override via workflow_dispatch
             IMAGE="${{ inputs.image_ref }}"
-
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            # Tag push — use the git tag as-is (e.g. v1.2.3)
             IMAGE="${BASE}:${GITHUB_REF_NAME}"
-
           else
-            # Scheduled run — use the latest v* git tag as-is
             LATEST_TAG=$(git tag --list 'v*' | sort -V | tail -n1)
             if [[ -z "${LATEST_TAG}" ]]; then
               echo "::error::No semver tags found. Push a 'v*' tag first or supply an explicit image_ref."
@@ -126,32 +120,42 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # govulncheck — official Go vuln DB
       - name: govulncheck
         uses: golang/govulncheck-action@v1
         with:
           go-package: ./...
 
+      # gosec — static analysis
+      # Exit codes: 0 = no issues, 1 = issues found (expected), 2 = tool error.
+      # Only exit code 2 should fail the job.
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
 
-      # gosec exits 0 = no issues, 1 = issues found, 2 = tool error.
-      # We only want to fail the job on exit code 2 (real error).
-      # Issues found (exit 1) are expected and should just be reported.
       - name: Run gosec
         run: |
-          gosec -fmt text -stdout ./... || EXIT=$?
-          if [[ "${EXIT:-0}" -eq 2 ]]; then
-            echo "::error::gosec encountered a tool error (exit 2)."
+          gosec -fmt text -stdout ./...
+          GOSEC_EXIT=$?
+          if [[ $GOSEC_EXIT -eq 2 ]]; then
+            echo "::error::gosec tool error (exit 2)"
             exit 2
           fi
           exit 0
 
+      # nancy — dependency CVEs via Sonatype OSS Index
+      # Asset naming scheme as of v1.1.0: nancy-<ver>-linux-amd64
       - name: Install nancy
         run: |
+          NANCY_VERSION=$(curl -sSfL \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/sonatype-nexus-community/nancy/releases/latest \
+            | python3 -c "import json,sys; print(json.load(sys.stdin)['tag_name'])")
+          echo "Installing nancy ${NANCY_VERSION}"
           curl -sSfL \
-            https://github.com/sonatype-nexus-community/nancy/releases/latest/download/nancy-linux.amd64-musl \
+            "https://github.com/sonatype-nexus-community/nancy/releases/download/${NANCY_VERSION}/nancy-${NANCY_VERSION}-linux-amd64" \
             -o /usr/local/bin/nancy
           chmod +x /usr/local/bin/nancy
+          nancy --version
 
       - name: Run nancy
         run: go list -json -deps ./... | nancy sleuth
