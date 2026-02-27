@@ -8,7 +8,6 @@ import (
 
 	"github.com/burritocatai/civcat/internal/api"
 	"github.com/burritocatai/civcat/internal/config"
-	"github.com/burritocatai/civcat/internal/downloader"
 	"github.com/burritocatai/civcat/internal/hfapi"
 	"github.com/burritocatai/civcat/internal/tracker"
 	"github.com/charmbracelet/bubbles/progress"
@@ -87,14 +86,10 @@ type App struct {
 	hfDetailOffset  int // scroll offset for file list viewport
 	hfDetailTypeIdx int // model type for ComfyUI directory mapping
 
-	// Download state
-	downloading      bool
-	downloadName     string
-	downloadProgress progress.Model
-	downloadPct      float64
-	downloadBytes    int64
-	downloadTotal    int64
-	downloadCh       chan downloader.Progress
+	// Download queue
+	queue          []queueItem
+	active         []*activeDownload
+	nextDownloadID int
 
 	// Config view
 	configCursor int
@@ -130,13 +125,15 @@ type modelDetailMsg struct {
 }
 
 type downloadProgressMsg struct {
+	downloadID      int
 	bytesDownloaded int64
 	totalBytes      int64
 }
 
 type downloadCompleteMsg struct {
-	installed *tracker.InstalledModel
-	err       error
+	downloadID int
+	installed  *tracker.InstalledModel
+	err        error
 }
 
 // searchTypes is the list of types the user can cycle through with 't'.
@@ -301,14 +298,13 @@ type updateCheckMsg struct {
 
 func NewApp(cfg *config.Config, client *api.Client, hfClient *hfapi.Client, trk *tracker.Tracker) *App {
 	a := &App{
-		cfg:              cfg,
-		client:           client,
-		hfClient:         hfClient,
-		tracker:          trk,
-		currentView:      viewInstalled,
-		installedModels:  trk.GetAll(),
-		configEdit:       -1,
-		downloadProgress: progress.New(progress.WithDefaultGradient()),
+		cfg:             cfg,
+		client:          client,
+		hfClient:        hfClient,
+		tracker:         trk,
+		currentView:     viewInstalled,
+		installedModels: trk.GetAll(),
+		configEdit:      -1,
 	}
 
 	// First-run: open config view with path field in edit mode.
@@ -332,9 +328,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.downloadProgress.Width = msg.Width - 6
-		if a.downloadProgress.Width > 80 {
-			a.downloadProgress.Width = 80
+		for _, ad := range a.active {
+			ad.progress.Width = msg.Width - 6
+			if ad.progress.Width > 80 {
+				ad.progress.Width = 80
+			}
 		}
 		return a, nil
 
@@ -378,18 +376,23 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case downloadProgressMsg:
-		a.downloadBytes = msg.bytesDownloaded
-		a.downloadTotal = msg.totalBytes
-		if msg.totalBytes > 0 {
-			a.downloadPct = float64(msg.bytesDownloaded) / float64(msg.totalBytes)
+		ad := a.findActive(msg.downloadID)
+		if ad != nil {
+			ad.bytes = msg.bytesDownloaded
+			ad.total = msg.totalBytes
+			if msg.totalBytes > 0 {
+				ad.pct = float64(msg.bytesDownloaded) / float64(msg.totalBytes)
+			}
+			cmd := ad.progress.SetPercent(ad.pct)
+			return a, tea.Batch(cmd, waitForProgressByID(ad.id, ad.ch))
 		}
-		cmd := a.downloadProgress.SetPercent(a.downloadPct)
-		return a, tea.Batch(cmd, a.waitForProgress())
+		return a, nil
 
 	case downloadCompleteMsg:
-		a.downloading = false
-		// Set bar to 100%.
-		cmd := a.downloadProgress.SetPercent(1.0)
+		ad := a.findActive(msg.downloadID)
+		if ad != nil {
+			a.removeActive(msg.downloadID)
+		}
 		if msg.err != nil {
 			a.errMsg = fmt.Sprintf("Download failed: %v", msg.err)
 		} else {
@@ -398,13 +401,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusMsg = fmt.Sprintf("Installed %s", msg.installed.ModelName)
 			a.errMsg = ""
 		}
-		return a, cmd
+		return a, a.dequeue()
 
 	// Handle animated progress bar frames.
 	case progress.FrameMsg:
-		progressModel, cmd := a.downloadProgress.Update(msg)
-		a.downloadProgress = progressModel.(progress.Model)
-		return a, cmd
+		var cmds []tea.Cmd
+		for _, ad := range a.active {
+			m, cmd := ad.progress.Update(msg)
+			ad.progress = m.(progress.Model)
+			cmds = append(cmds, cmd)
+		}
+		return a, tea.Batch(cmds...)
+
+	case queueUpdatedMsg:
+		return a, a.dequeue()
 
 	case hfSearchResultMsg:
 		a.hfSearching = false
@@ -677,7 +687,7 @@ func (a *App) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.detailCursor++
 		}
 	case "enter", "i":
-		if !a.downloading && a.detailModel != nil && len(a.detailModel.Versions) > 0 {
+		if a.detailModel != nil && len(a.detailModel.Versions) > 0 {
 			version := a.detailModel.Versions[a.detailCursor]
 			if version.IsEarlyAccess() {
 				days := version.EarlyAccessDaysLeft()
@@ -692,20 +702,14 @@ func (a *App) handleDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.currentView = viewFileSelect
 				return a, nil
 			}
-			a.downloading = true
-			a.downloadName = a.detailModel.Name
-			a.downloadPct = 0
-			a.downloadBytes = 0
-			a.downloadTotal = 0
-			// Reset the progress bar.
-			a.downloadProgress = progress.New(progress.WithDefaultGradient())
-			if a.width > 0 {
-				a.downloadProgress.Width = a.width - 6
-				if a.downloadProgress.Width > 80 {
-					a.downloadProgress.Width = 80
-				}
-			}
-			return a, a.downloadCmd(a.detailModel, &version, nil)
+			a.enqueue(queueItem{
+				source:     sourceCivitai,
+				name:       a.detailModel.Name,
+				civModel:   a.detailModel,
+				civVersion: &version,
+			})
+			a.statusMsg = fmt.Sprintf("Queued %s for download", a.detailModel.Name)
+			return a, func() tea.Msg { return queueUpdatedMsg{} }
 		}
 	}
 	return a, nil
@@ -729,22 +733,18 @@ func (a *App) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.fileSelectCursor++
 		}
 	case "enter", "i":
-		if !a.downloading && len(a.fileSelectFiles) > 0 {
+		if len(a.fileSelectFiles) > 0 {
 			file := a.fileSelectFiles[a.fileSelectCursor]
 			version := a.fileSelectVersion
-			a.downloading = true
-			a.downloadName = a.detailModel.Name
-			a.downloadPct = 0
-			a.downloadBytes = 0
-			a.downloadTotal = 0
-			a.downloadProgress = progress.New(progress.WithDefaultGradient())
-			if a.width > 0 {
-				a.downloadProgress.Width = a.width - 6
-				if a.downloadProgress.Width > 80 {
-					a.downloadProgress.Width = 80
-				}
-			}
-			return a, a.downloadCmd(a.detailModel, version, &file)
+			a.enqueue(queueItem{
+				source:     sourceCivitai,
+				name:       a.detailModel.Name,
+				civModel:   a.detailModel,
+				civVersion: version,
+				civFile:    &file,
+			})
+			a.statusMsg = fmt.Sprintf("Queued %s for download", a.detailModel.Name)
+			return a, func() tea.Msg { return queueUpdatedMsg{} }
 		}
 	}
 	return a, nil
@@ -764,10 +764,21 @@ func (a *App) handleConfigKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.configCursor--
 		}
 	case "down", "j":
-		if a.configCursor < 2 {
+		if a.configCursor < 3 {
 			a.configCursor++
 		}
 	case "enter":
+		if a.configCursor == 3 {
+			// Toggle parallel download (boolean, no text editing).
+			a.cfg.ParallelDownload = !a.cfg.ParallelDownload
+			a.cfg.Save()
+			if a.cfg.ParallelDownload {
+				a.statusMsg = "Parallel download enabled"
+			} else {
+				a.statusMsg = "Parallel download disabled"
+			}
+			return a, nil
+		}
 		a.configEdit = a.configCursor
 		switch a.configCursor {
 		case 0:
@@ -962,60 +973,6 @@ func (a *App) fetchModelDetail(modelID int) tea.Cmd {
 	}
 }
 
-// downloadCmd starts a background download and returns a cmd to listen for
-// the first progress update. The download goroutine sends progress on a
-// channel; waitForProgress reads from it and returns tea messages.
-func (a *App) downloadCmd(model *api.Model, version *api.ModelVersion, selectedFile *api.ModelFile) tea.Cmd {
-	client := a.client
-	comfyPath := a.cfg.ComfyUIPath
-	m := *model
-	v := *version
-	var sf *api.ModelFile
-	if selectedFile != nil {
-		copy := *selectedFile
-		sf = &copy
-	}
-
-	ch := make(chan downloader.Progress, 64)
-	a.downloadCh = ch
-
-	// Run download in a background goroutine.
-	go func() {
-		_, err := downloader.Download(client, &m, &v, comfyPath, ch, sf)
-		if err != nil {
-			// Send error as a final message on the channel.
-			ch <- downloader.Progress{Done: true, Err: err}
-		}
-		// On success, Download already sent the Done message with Installed.
-	}()
-
-	// Return the first waitForProgress to start the read loop.
-	return a.waitForProgress()
-}
-
-// waitForProgress returns a tea.Cmd that blocks until the next progress
-// update arrives on the download channel, then returns the appropriate msg.
-func (a *App) waitForProgress() tea.Cmd {
-	ch := a.downloadCh
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		p, ok := <-ch
-		if !ok {
-			// Channel closed — download finished.
-			return nil
-		}
-		if p.Done || p.Err != nil {
-			return downloadCompleteMsg{installed: p.Installed, err: p.Err}
-		}
-		return downloadProgressMsg{
-			bytesDownloaded: p.BytesDownloaded,
-			totalBytes:      p.TotalBytes,
-		}
-	}
-}
-
 func (a *App) checkUpdatesCmd() tea.Cmd {
 	models := a.tracker.GetAll()
 	client := a.client
@@ -1083,22 +1040,7 @@ func (a *App) View() string {
 		b.WriteString(successStyle.Render(a.statusMsg))
 		b.WriteString("\n")
 	}
-	if a.downloading {
-		b.WriteString(warningStyle.Render(fmt.Sprintf("  Downloading %s", a.downloadName)))
-		b.WriteString("\n")
-		b.WriteString("  " + a.downloadProgress.View())
-		b.WriteString("\n")
-		if a.downloadTotal > 0 {
-			b.WriteString(mutedStyle.Render(fmt.Sprintf("  %s / %s (%.1f%%)",
-				formatBytes(a.downloadBytes),
-				formatBytes(a.downloadTotal),
-				a.downloadPct*100)))
-		} else {
-			b.WriteString(mutedStyle.Render(fmt.Sprintf("  %s downloaded",
-				formatBytes(a.downloadBytes))))
-		}
-		b.WriteString("\n")
-	}
+	b.WriteString(a.viewDownloadStatus())
 
 	return b.String()
 }
@@ -1352,6 +1294,21 @@ func (a *App) viewConfig() string {
 			}
 			b.WriteString(style.Render(fmt.Sprintf("%s%-15s %s", prefix, f.label+":", val)) + "\n")
 		}
+	}
+
+	// Parallel download toggle (row index 3).
+	{
+		prefix := "  "
+		style := normalItemStyle
+		if a.configCursor == 3 {
+			prefix = "> "
+			style = selectedStyle
+		}
+		val := "Off"
+		if a.cfg.ParallelDownload {
+			val = "On"
+		}
+		b.WriteString(style.Render(fmt.Sprintf("%s%-15s %s", prefix, "Parallel DL:", val)) + "\n")
 	}
 
 	b.WriteString("\n")

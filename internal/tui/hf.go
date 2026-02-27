@@ -4,10 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/burritocatai/civcat/internal/api"
-	"github.com/burritocatai/civcat/internal/downloader"
 	"github.com/burritocatai/civcat/internal/hfapi"
-	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -100,25 +97,22 @@ func (a *App) handleHFDetailKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "T":
 		a.hfDetailTypeIdx = (a.hfDetailTypeIdx + len(hfModelTypes) - 1) % len(hfModelTypes)
 	case "enter", "i":
-		if !a.downloading && len(a.hfDetailFiles) > 0 {
+		if len(a.hfDetailFiles) > 0 {
 			if a.hfDetailModel.IsGated() {
 				a.errMsg = "This model is gated — you may need an HF token with access approval"
 			}
 			file := a.hfDetailFiles[a.hfDetailCursor]
 			modelType := hfModelTypes[a.hfDetailTypeIdx].modelType
-			a.downloading = true
-			a.downloadName = a.hfDetailModel.ID + "/" + file.RFilename
-			a.downloadPct = 0
-			a.downloadBytes = 0
-			a.downloadTotal = 0
-			a.downloadProgress = progress.New(progress.WithDefaultGradient())
-			if a.width > 0 {
-				a.downloadProgress.Width = a.width - 6
-				if a.downloadProgress.Width > 80 {
-					a.downloadProgress.Width = 80
-				}
-			}
-			return a, a.hfDownloadCmd(a.hfDetailModel, file.RFilename, modelType)
+			name := a.hfDetailModel.ID + "/" + file.RFilename
+			a.enqueue(queueItem{
+				source:     sourceHuggingFace,
+				name:       name,
+				hfModel:    a.hfDetailModel,
+				hfFilename: file.RFilename,
+				hfType:     modelType,
+			})
+			a.statusMsg = fmt.Sprintf("Queued %s for download", name)
+			return a, func() tea.Msg { return queueUpdatedMsg{} }
 		}
 	}
 	return a, nil
@@ -156,26 +150,6 @@ func (a *App) hfFetchModelDetail(repoID string) tea.Cmd {
 		model, err := client.GetModel(repoID)
 		return hfModelDetailMsg{model: model, err: err}
 	}
-}
-
-func (a *App) hfDownloadCmd(model *hfapi.HFModel, filename string, modelType api.ModelType) tea.Cmd {
-	client := a.hfClient
-	comfyPath := a.cfg.ComfyUIPath
-	m := *model
-	mt := modelType
-	fn := filename
-
-	ch := make(chan downloader.Progress, 64)
-	a.downloadCh = ch
-
-	go func() {
-		_, err := downloader.DownloadHF(client, &m, fn, mt, comfyPath, ch)
-		if err != nil {
-			ch <- downloader.Progress{Done: true, Err: err}
-		}
-	}()
-
-	return a.waitForProgress()
 }
 
 // Views

@@ -13,9 +13,10 @@ const (
 )
 
 type Config struct {
-	ComfyUIPath string `json:"comfyui_path"`
-	APIKey      string `json:"api_key,omitempty"`
-	HFToken     string `json:"hf_token,omitempty"`
+	ComfyUIPath      string `json:"comfyui_path"`
+	APIKey           string `json:"api_key,omitempty"`
+	HFToken          string `json:"hf_token,omitempty"`
+	ParallelDownload bool   `json:"parallel_download,omitempty"`
 }
 
 func configPath() (string, error) {
