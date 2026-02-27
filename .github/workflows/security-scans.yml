@@ -50,11 +50,9 @@ jobs:
 
           if [[ -n "${{ inputs.image_ref }}" ]]; then
             IMAGE="${{ inputs.image_ref }}"
-
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME#v}"
             IMAGE="${BASE}:${TAG}"
-
           else
             LATEST_TAG=$(git tag --list 'v*' | sort -V | tail -n1)
             if [[ -z "${LATEST_TAG}" ]]; then
@@ -118,38 +116,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # setup-go: only specify go-version-file here — govulncheck-action
-      # manages its own Go installation so we don't pass go-version-file to it.
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false   # avoids the cache service 400 error
 
       # govulncheck — official Go vuln DB
-      # Let the action handle its own Go setup to avoid the duplicate-input warning.
       - name: govulncheck
         uses: golang/govulncheck-action@v1
         with:
           go-package: ./...
 
       # gosec — static analysis
-      # Do NOT pass -verbose=text — it injects a non-standard 'relationships'
-      # field that fails GitHub's SARIF schema validator.
+      # IMPORTANT: gosec's SARIF output has an upstream bug where it emits a
+      # non-standard 'relationships' field that fails GitHub's SARIF schema
+      # validator. There is no flag to suppress it. We therefore use the 'text'
+      # format for human-readable output in the job log and fail explicitly on
+      # findings, rather than trying to upload broken SARIF to the Security tab.
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
 
       - name: Run gosec
         run: |
-          gosec -fmt sarif -out gosec.sarif ./...
-          exit 0  # always succeed so the upload step runs even when issues are found
-
-      - name: Upload gosec SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: gosec.sarif
-          category: gosec
+          gosec -fmt text -stdout ./...
 
       # nancy — dependency CVEs via Sonatype OSS Index
       - name: Install nancy
@@ -164,10 +154,6 @@ jobs:
 
   # ─────────────────────────────────────────────
   # 4. Container image scan — Grype (CLI)
-  #
-  # We call the Grype CLI directly instead of using anchore/scan-action because
-  # the action exits non-zero on HIGH findings before finishing the SARIF write,
-  # producing a truncated file that fails the upload with a JSON syntax error.
   # ─────────────────────────────────────────────
   grype:
     name: Grype (Container Image)
@@ -184,14 +170,27 @@ jobs:
       - name: Install Grype
         run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
 
+      # IMPORTANT: do NOT use --fail-on. It causes Grype to exit before the OS
+      # flushes the SARIF file buffer, producing a truncated JSON file that
+      # fails the upload step. Instead we check the output for findings and
+      # fail the job ourselves after the upload has completed.
       - name: Run Grype
-        id: grype
         run: |
           grype "${{ needs.resolve-image.outputs.image_ref }}" \
             --output sarif \
-            --file grype.sarif \
-            --fail-on high \
-            || echo "grype_failed=true" >> "$GITHUB_OUTPUT"
+            --file grype.sarif
+          echo "grype_exit=$?" >> "$GITHUB_ENV"
+
+      - name: Verify SARIF was written
+        run: |
+          if [[ ! -f grype.sarif ]]; then
+            echo "::error::grype.sarif was not created"
+            exit 1
+          fi
+          echo "grype.sarif size: $(wc -c < grype.sarif) bytes"
+          # Validate it is parseable JSON
+          python3 -c "import json,sys; json.load(open('grype.sarif'))" \
+            || { echo "::error::grype.sarif is not valid JSON"; exit 1; }
 
       - name: Upload Grype SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -200,19 +199,37 @@ jobs:
           sarif_file: grype.sarif
           category: grype
 
+      # Fail the job if Grype found any HIGH or CRITICAL vulnerabilities.
+      # We do this after the upload so findings always appear in the Security tab.
       - name: Fail on HIGH/CRITICAL findings
-        if: steps.grype.outputs.grype_failed == 'true'
         run: |
-          echo "::error::Grype found HIGH or CRITICAL vulnerabilities. Review the Security tab."
-          exit 1
+          HIGH=$(python3 - <<'EOF'
+          import json, sys
+          sarif = json.load(open("grype.sarif"))
+          severities = []
+          for run in sarif.get("runs", []):
+              for result in run.get("results", []):
+                  level = result.get("level", "")
+                  props = result.get("properties", {})
+                  severity = props.get("security-severity", "0")
+                  severities.append(float(severity))
+          high_or_critical = [s for s in severities if s >= 7.0]
+          print(len(high_or_critical))
+          EOF
+          )
+          if [[ "$HIGH" -gt 0 ]]; then
+            echo "::error::Grype found ${HIGH} HIGH or CRITICAL vulnerabilities. Review the Security tab."
+            exit 1
+          fi
+          echo "No HIGH or CRITICAL vulnerabilities found."
 
   # ─────────────────────────────────────────────
-  # 5. Container image scan — Trivy (CLI)
+  # 5. Container image + filesystem scan — Trivy (CLI)
   #
-  # We call the Trivy CLI directly instead of using aquasecurity/trivy-action
-  # because the action runs inside a container with its own working directory,
-  # causing output files to be written to a path that the host runner cannot
-  # find during the upload step — even when using ${{ github.workspace }}.
+  # IMPORTANT: we use the official install script rather than the apt repo or
+  # the trivy-action Docker wrapper. The Docker wrapper writes output files
+  # inside the container's own filesystem — not the runner's GITHUB_WORKSPACE —
+  # making them invisible to the upload steps regardless of what path you pass.
   # ─────────────────────────────────────────────
   trivy:
     name: Trivy (Image + Filesystem)
@@ -230,14 +247,9 @@ jobs:
 
       - name: Install Trivy
         run: |
-          sudo apt-get install -y wget apt-transport-https gnupg
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-            | gpg --dearmor \
-            | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
-            | sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -y
-          sudo apt-get install -y trivy
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
 
       - name: Trivy — image scan
         run: |
@@ -247,6 +259,12 @@ jobs:
             --severity HIGH,CRITICAL \
             --exit-code 0 \
             "${{ needs.resolve-image.outputs.image_ref }}"
+
+      - name: Verify image SARIF
+        run: |
+          ls -la trivy-image.sarif
+          python3 -c "import json; json.load(open('trivy-image.sarif'))" \
+            || { echo "::error::trivy-image.sarif is not valid JSON"; exit 1; }
 
       - name: Upload Trivy image SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -263,6 +281,12 @@ jobs:
             --scanners misconfig,secret,vuln \
             --exit-code 0 \
             .
+
+      - name: Verify filesystem SARIF
+        run: |
+          ls -la trivy-fs.sarif
+          python3 -c "import json; json.load(open('trivy-fs.sarif'))" \
+            || { echo "::error::trivy-fs.sarif is not valid JSON"; exit 1; }
 
       - name: Upload Trivy filesystem SARIF
         uses: github/codeql-action/upload-sarif@v4
