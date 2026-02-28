@@ -38,8 +38,10 @@ type App struct {
 	height       int
 
 	// Installed view
-	installedModels []tracker.InstalledModel
-	installedCursor int
+	installedModels     []tracker.InstalledModel
+	installedCursor     int
+	installedOffset     int // scroll offset for viewport
+	installedFilterIdx  int // index into searchTypes for type filter
 
 	// Search view
 	searchQuery     string
@@ -398,6 +400,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.tracker.Add(*msg.installed)
 			a.installedModels = a.tracker.GetAll()
+			a.clampInstalledViewport(len(a.filteredInstalledModels()))
 			a.statusMsg = fmt.Sprintf("Installed %s", msg.installed.ModelName)
 			a.errMsg = ""
 		}
@@ -462,6 +465,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			a.installedModels = a.tracker.GetAll()
+			a.clampInstalledViewport(len(a.filteredInstalledModels()))
 			a.errMsg = ""
 		}
 		return a, nil
@@ -504,6 +508,8 @@ func (a *App) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	filtered := a.filteredInstalledModels()
+
 	// Handle delete confirmation dialog.
 	if a.confirmDelete {
 		switch msg.String() {
@@ -521,9 +527,8 @@ func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.tracker.Remove(m.ModelID)
 			}
 			a.installedModels = a.tracker.GetAll()
-			if a.installedCursor >= len(a.installedModels) && a.installedCursor > 0 {
-				a.installedCursor--
-			}
+			filtered = a.filteredInstalledModels()
+			a.clampInstalledViewport(len(filtered))
 			if fileErr != nil && !os.IsNotExist(fileErr) {
 				a.statusMsg = fmt.Sprintf("Removed %s from tracking (file delete failed: %v)", m.ModelName, fileErr)
 			} else {
@@ -542,11 +547,26 @@ func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if a.installedCursor > 0 {
 			a.installedCursor--
+			if a.installedCursor < a.installedOffset {
+				a.installedOffset = a.installedCursor
+			}
 		}
 	case "down", "j":
-		if a.installedCursor < len(a.installedModels)-1 {
+		if a.installedCursor < len(filtered)-1 {
 			a.installedCursor++
+			maxVisible := a.installedPageSize()
+			if maxVisible > 0 && a.installedCursor >= a.installedOffset+maxVisible {
+				a.installedOffset = a.installedCursor - maxVisible + 1
+			}
 		}
+	case "t":
+		a.installedFilterIdx = (a.installedFilterIdx + 1) % len(searchTypes)
+		a.installedCursor = 0
+		a.installedOffset = 0
+	case "T":
+		a.installedFilterIdx = (a.installedFilterIdx + len(searchTypes) - 1) % len(searchTypes)
+		a.installedCursor = 0
+		a.installedOffset = 0
 	case "s":
 		a.currentView = viewSearch
 		a.searchInput = true
@@ -564,14 +584,14 @@ func (a *App) handleInstalledKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.updatesChecked = false
 		return a, a.checkUpdatesCmd()
 	case "enter":
-		if len(a.installedModels) > 0 {
-			m := a.installedModels[a.installedCursor]
+		if len(filtered) > 0 {
+			m := filtered[a.installedCursor]
 			a.prevView = viewInstalled
 			return a, a.fetchModelDetail(m.ModelID)
 		}
 	case "d":
-		if len(a.installedModels) > 0 {
-			m := a.installedModels[a.installedCursor]
+		if len(filtered) > 0 {
+			m := filtered[a.installedCursor]
 			a.confirmDelete = true
 			a.deleteCandidate = &m
 			a.statusMsg = ""
@@ -914,6 +934,63 @@ func parseCivitaiURN(s string) (modelID int, versionID int, ok bool) {
 	return mid, versionID, true
 }
 
+// filteredInstalledModels returns the installed models matching the current type filter.
+func (a *App) filteredInstalledModels() []tracker.InstalledModel {
+	if a.installedFilterIdx == 0 { // "All"
+		return a.installedModels
+	}
+	filterType := searchTypes[a.installedFilterIdx].modelType
+	var filtered []tracker.InstalledModel
+	for _, m := range a.installedModels {
+		if m.Type == filterType {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
+}
+
+// installedPageSize returns the number of model lines visible in the viewport.
+func (a *App) installedPageSize() int {
+	if a.height <= 0 {
+		return 0 // unknown height — show all
+	}
+	// Overhead: app title(2) + subtitle+blank(2) + filter bar(1) + blank(1)
+	// + blank after list(1) + help(3 with padding) + status/error/downloads(~4)
+	const overhead = 14
+	avail := a.height - overhead
+	if avail < 5 {
+		avail = 5
+	}
+	return avail
+}
+
+// clampInstalledViewport ensures cursor and offset stay in bounds for the given list length.
+func (a *App) clampInstalledViewport(listLen int) {
+	if a.installedCursor >= listLen {
+		a.installedCursor = listLen - 1
+	}
+	if a.installedCursor < 0 {
+		a.installedCursor = 0
+	}
+	maxVisible := a.installedPageSize()
+	if maxVisible <= 0 || maxVisible >= listLen {
+		a.installedOffset = 0
+		return
+	}
+	if a.installedCursor < a.installedOffset {
+		a.installedOffset = a.installedCursor
+	}
+	if a.installedCursor >= a.installedOffset+maxVisible {
+		a.installedOffset = a.installedCursor - maxVisible + 1
+	}
+	if a.installedOffset > listLen-maxVisible {
+		a.installedOffset = listLen - maxVisible
+	}
+	if a.installedOffset < 0 {
+		a.installedOffset = 0
+	}
+}
+
 // Commands
 
 // reSearch resets pagination and re-searches with current filters.
@@ -1048,12 +1125,42 @@ func (a *App) View() string {
 func (a *App) viewInstalled() string {
 	var b strings.Builder
 
+	filtered := a.filteredInstalledModels()
+	total := len(filtered)
+
 	b.WriteString(subtitleStyle.Render("Installed Models") + "\n\n")
+
+	// Filter bar
+	typeLabel := searchTypes[a.installedFilterIdx].label
+	countLabel := fmt.Sprintf("%d models", total)
+	if a.installedFilterIdx != 0 {
+		countLabel = fmt.Sprintf("%d of %d models", total, len(a.installedModels))
+	}
+	b.WriteString(mutedStyle.Render(fmt.Sprintf("  Type: %-14s  %s", typeLabel, countLabel)) + "\n\n")
 
 	if len(a.installedModels) == 0 {
 		b.WriteString(mutedStyle.Render("  No models installed. Press 's' to search Civitai, 'h' for HuggingFace.") + "\n")
+	} else if total == 0 {
+		b.WriteString(mutedStyle.Render("  No models match the current filter.") + "\n")
 	} else {
-		for i, m := range a.installedModels {
+		a.clampInstalledViewport(total)
+
+		maxVisible := a.installedPageSize()
+		start := a.installedOffset
+		end := total
+		if maxVisible > 0 && maxVisible < total {
+			end = start + maxVisible
+			if end > total {
+				end = total
+			}
+		}
+
+		if start > 0 {
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("  ... %d more above ...", start)) + "\n")
+		}
+
+		for i := start; i < end; i++ {
+			m := filtered[i]
 			prefix := "  "
 			style := normalItemStyle
 			if i == a.installedCursor {
@@ -1078,13 +1185,18 @@ func (a *App) viewInstalled() string {
 
 			b.WriteString(style.Render(line) + "\n")
 		}
+
+		remaining := total - end
+		if remaining > 0 {
+			b.WriteString(mutedStyle.Render(fmt.Sprintf("  ... %d more below ...", remaining)) + "\n")
+		}
 	}
 
 	b.WriteString("\n")
 	if a.confirmDelete && a.deleteCandidate != nil {
 		b.WriteString(warningStyle.Render(fmt.Sprintf("  Delete %s and remove file from disk? (y/N)", a.deleteCandidate.ModelName)))
 	} else {
-		b.WriteString(helpStyle.Render("  s: search civitai  h: search huggingface  u: updates  c: config  enter: details  d: delete  e: export  q: quit"))
+		b.WriteString(helpStyle.Render("  s: search civitai  h: search huggingface  t: filter type  u: updates  c: config  enter: details  d: delete  e: export  q: quit"))
 	}
 
 	return b.String()
